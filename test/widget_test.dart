@@ -6,13 +6,16 @@
 // tree, read text, and verify that the values of widget properties are correct.
 
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tmcell_ussd/main.dart';
 
 void main() {
-  testWidgets('TM Utility dashboard smoke test', (WidgetTester tester) async {
+  testWidgets('TM Utility onboarding smoke test', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
     await tester.pumpWidget(const TMUtilityApp());
-    expect(find.text('TM Utility'), findsOneWidget);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('Hoş geldiňiz!'), findsOneWidget);
+    expect(find.text('Dowam et'), findsOneWidget);
   });
 }

@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'tm_parser.dart';
 
 void main() {
@@ -62,7 +65,323 @@ class TMUtilityApp extends StatelessWidget {
         textTheme: GoogleFonts.interTextTheme(),
         useMaterial3: true,
       ),
-      home: const DashboardScreen(),
+      home: const AppInitializer(),
+    );
+  }
+}
+
+// ─── App Initializer ─────────────────────────────────────────────────────────
+class AppInitializer extends StatefulWidget {
+  const AppInitializer({super.key});
+
+  @override
+  State<AppInitializer> createState() => _AppInitializerState();
+}
+
+class _AppInitializerState extends State<AppInitializer> {
+  bool _isLoading = true;
+  bool _hasPhoneNumber = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSavedPhone();
+  }
+
+  Future<void> _checkSavedPhone() async {
+    final prefs = await SharedPreferences.getInstance();
+    final phone = prefs.getString('phone_number');
+    if (mounted) {
+      setState(() {
+        _hasPhoneNumber = phone != null && phone.trim().isNotEmpty;
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: AppColors.background,
+        body: Center(
+          child: CircularProgressIndicator(color: AppColors.ringInternet),
+        ),
+      );
+    }
+
+    if (!_hasPhoneNumber) {
+      return const OnboardingScreen();
+    }
+
+    return const DashboardScreen();
+  }
+}
+
+// ─── Mandatory Full-Screen Onboarding ─────────────────────────────────────────
+class OnboardingScreen extends StatefulWidget {
+  final bool isEditing;
+  const OnboardingScreen({super.key, this.isEditing = false});
+
+  @override
+  State<OnboardingScreen> createState() => _OnboardingScreenState();
+}
+
+class _OnboardingScreenState extends State<OnboardingScreen> {
+  final TextEditingController _phoneController =
+      TextEditingController(text: '+993 6');
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentPhone();
+  }
+
+  Future<void> _loadCurrentPhone() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('phone_number');
+    if (saved != null && saved.isNotEmpty && mounted) {
+      _phoneController.text = saved;
+    }
+  }
+
+  Future<void> _submitPhoneNumber() async {
+    final text = _phoneController.text.trim();
+    final cleanNumber = text.replaceAll(' ', '');
+    // Validate TM CELL phone number format: +993 6X XXXXXX
+    final regex = RegExp(r'^\+9936[1-6]\d{6}$');
+
+    if (!regex.hasMatch(cleanNumber)) {
+      setState(() {
+        _errorMessage = 'Haýyş, dogry TM CELL nomerini giriziň (+993 6X XXXXXX)';
+      });
+      return;
+    }
+
+    setState(() {
+      _errorMessage = null;
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('phone_number', text);
+
+    if (widget.isEditing) {
+      if (mounted) Navigator.pop(context, text);
+    } else {
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (widget.isEditing)
+                IconButton(
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  onPressed: () => Navigator.pop(context),
+                )
+              else
+                const SizedBox(height: 16),
+
+              const Spacer(flex: 1),
+
+              // Logo & Icon
+              Center(
+                child: Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    gradient: AppColors.mainGradient,
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.gradEnd.withValues(alpha: 0.4),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Center(
+                    child: Text(
+                      'TM',
+                      style: GoogleFonts.inter(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 32,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 32),
+
+              // Title & Description
+              Text(
+                widget.isEditing ? 'Nomeri üýtgetmek' : 'Hoş geldiňiz!',
+                style: GoogleFonts.inter(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textDark,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                widget.isEditing
+                    ? 'Täze TM CELL telefon belgiňizi giriziň.'
+                    : 'TM Utility hyzmatyndan peýdalanmak üçin telefon belgiňizi giriziň.',
+                style: GoogleFonts.inter(
+                  fontSize: 15,
+                  color: AppColors.textMid,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 32),
+
+              // Input field
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: TextField(
+                  controller: _phoneController,
+                  keyboardType: TextInputType.phone,
+                  style: GoogleFonts.inter(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                    letterSpacing: 0.5,
+                  ),
+                  decoration: InputDecoration(
+                    prefixIcon: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: Icon(
+                        Icons.phone_android_rounded,
+                        color: AppColors.ringInternet,
+                        size: 24,
+                      ),
+                    ),
+                    prefixIconConstraints: const BoxConstraints(minWidth: 50),
+                    hintText: '+993 65 123456',
+                    hintStyle: GoogleFonts.inter(
+                      color: AppColors.textLight,
+                      fontWeight: FontWeight.w400,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 18),
+                  ),
+                  onChanged: (_) {
+                    if (_errorMessage != null) {
+                      setState(() => _errorMessage = null);
+                    }
+                  },
+                ),
+              ),
+
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Icon(Icons.error_outline_rounded,
+                        color: Colors.redAccent, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        _errorMessage!,
+                        style: GoogleFonts.inter(
+                          color: Colors.redAccent,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+
+              const Spacer(flex: 2),
+
+              // Submit Button
+              SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(28),
+                    ),
+                    elevation: 0,
+                  ),
+                  onPressed: _submitPhoneNumber,
+                  child: Ink(
+                    decoration: BoxDecoration(
+                      gradient: AppColors.btnGradient,
+                      borderRadius: BorderRadius.circular(28),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.gradEnd.withValues(alpha: 0.4),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: Container(
+                      alignment: Alignment.center,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            widget.isEditing ? 'Ýatda saklaň' : 'Dowam et',
+                            style: GoogleFonts.inter(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Icon(
+                            Icons.arrow_forward_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -82,6 +401,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _isRefreshing = false;
   String _lastUpdated = '14:30';
   int _selectedSimSlot = 0; // Dual SIM Support (0: SIM 1, 1: SIM 2)
+  String _phoneNumber = '';
+  String _autoRefreshFreq = 'Her 6 sagatdan'; // Auto refresh frequency
 
   // Dynamic State Variables (Both Remaining & Dynamic Totals)
   double _balance = 45.70;
@@ -112,6 +433,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       CurvedAnimation(parent: _spinController, curve: Curves.easeInOut),
     );
 
+    _loadPreferences();
+
     // Native Silent SMS Listener Setup
     _channel.setMethodCallHandler(_nativeMethodCallHandler);
   }
@@ -121,6 +444,43 @@ class _DashboardScreenState extends State<DashboardScreen>
     _timeoutTimer?.cancel();
     _spinController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedPhone = prefs.getString('phone_number');
+    final savedSim = prefs.getInt('sim_slot');
+    final savedFreq = prefs.getString('auto_refresh_freq');
+
+    if (mounted) {
+      setState(() {
+        if (savedPhone != null && savedPhone.isNotEmpty) {
+          _phoneNumber = savedPhone;
+        }
+        if (savedSim != null) {
+          _selectedSimSlot = savedSim;
+        }
+        if (savedFreq != null) {
+          _autoRefreshFreq = savedFreq;
+        }
+      });
+    }
+  }
+
+  Future<void> _saveSimSlot(int slot) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('sim_slot', slot);
+    setState(() {
+      _selectedSimSlot = slot;
+    });
+  }
+
+  Future<void> _saveAutoRefreshFreq(String freq) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('auto_refresh_freq', freq);
+    setState(() {
+      _autoRefreshFreq = freq;
+    });
   }
 
   Future<dynamic> _nativeMethodCallHandler(MethodCall call) async {
@@ -181,7 +541,14 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _handleRefresh() async {
     if (_isRefreshing) return;
 
-    // 1. Permission Check for SMS & Phone
+    final bool isRealAndroidDevice = !kIsWeb && Platform.isAndroid;
+
+    if (!isRealAndroidDevice) {
+      await _runMockSimulation();
+      return;
+    }
+
+    // 1. Permission Check for SMS & Phone on Android
     final smsStatus = await Permission.sms.request();
     final phoneStatus = await Permission.phone.request();
 
@@ -189,7 +556,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('İzinler verilmedi. USSD ve SMS işlemi gerçekleştirilemiyor.'),
+            content: Text('Rugsatlar berilmedi. USSD hem-de SMS amaly ýerine ýetirilip bilinmedi.'),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -240,7 +607,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               children: [
                 Icon(Icons.check_circle_outline, color: Colors.white),
                 SizedBox(width: 8),
-                Text('Veriler güncellendi!'),
+                Text('Maglumatlar täzelendi!'),
               ],
             ),
             backgroundColor: Color(0xFF00B4D8),
@@ -248,11 +615,14 @@ class _DashboardScreenState extends State<DashboardScreen>
           ),
         );
       }
+    } on MissingPluginException catch (_) {
+      await _runMockSimulation();
+      return;
     } catch (e) {
       if (e == 'TIMEOUT' && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Operatörden yanıt alınamadı. Lütfen tekrar deneyiniz.'),
+            content: Text('Operatordan jogap alynmady. Täzeden synanyşyň.'),
             backgroundColor: Colors.deepOrange,
             duration: Duration(seconds: 3),
           ),
@@ -270,15 +640,257 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
-  void _toggleSimSlot() {
+  /// Smooth 2-second Mock Simulation for Emulators / PC testing
+  Future<void> _runMockSimulation() async {
+    setState(() => _isRefreshing = true);
+    _spinController.repeat();
+
+    await Future.delayed(const Duration(milliseconds: 2000));
+
+    final now = TimeOfDay.now();
+    final timestamp =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
     setState(() {
-      _selectedSimSlot = _selectedSimSlot == 0 ? 1 : 0;
+      _isRefreshing = false;
+      _lastUpdated = timestamp;
+      _balance = (45.70 - (math.Random().nextDouble() * 0.4)).clamp(0.0, 999.0);
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Varsayılan hat: SIM ${_selectedSimSlot + 1} seçildi'),
-        duration: const Duration(seconds: 1),
+    _spinController.stop();
+    _spinController.reset();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle_outline, color: Colors.white),
+              SizedBox(width: 8),
+              Text('Maglumatlar täzelendi! (Simulýasiýa)'),
+            ],
+          ),
+          backgroundColor: Color(0xFF00B4D8),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _showSettingsBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Sazlamalar',
+                        style: GoogleFonts.inter(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Option 1: Change Phone Number via Full Screen Onboarding
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.ringInternet.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.phone_rounded,
+                          color: AppColors.ringInternet),
+                    ),
+                    title: Text(
+                      'Nomeri üýtgetmek',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    subtitle: Text(
+                      _phoneNumber,
+                      style: GoogleFonts.inter(
+                        color: AppColors.textMid,
+                        fontSize: 13,
+                      ),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () async {
+                      Navigator.pop(context);
+                      final newPhone = await Navigator.push<String>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const OnboardingScreen(isEditing: true),
+                        ),
+                      );
+                      if (newPhone != null && newPhone.isNotEmpty) {
+                        setState(() {
+                          _phoneNumber = newPhone;
+                        });
+                      }
+                    },
+                  ),
+                  const Divider(height: 24),
+
+                  // Option 2: Select SIM Slot
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.ringMinutes.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.sim_card_outlined,
+                          color: AppColors.ringMinutes),
+                    ),
+                    title: Text(
+                      'SIM karta saýlamak',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Häzirki saýlanan: SIM ${_selectedSimSlot + 1}',
+                      style: GoogleFonts.inter(
+                        color: AppColors.textMid,
+                        fontSize: 13,
+                      ),
+                    ),
+                    trailing: SegmentedButton<int>(
+                      segments: const [
+                        ButtonSegment(value: 0, label: Text('SIM 1')),
+                        ButtonSegment(value: 1, label: Text('SIM 2')),
+                      ],
+                      selected: {_selectedSimSlot},
+                      onSelectionChanged: (Set<int> newSelection) {
+                        final selected = newSelection.first;
+                        _saveSimSlot(selected);
+                        setModalState(() {});
+                        setState(() {});
+                      },
+                    ),
+                  ),
+                  const Divider(height: 24),
+
+                  // Option 3: Auto Refresh Frequency
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.ringSMS.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.update_rounded,
+                          color: AppColors.ringSMS),
+                    ),
+                    title: Text(
+                      'Awtomatiki täzelenme',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    subtitle: Text(
+                      _autoRefreshFreq,
+                      style: GoogleFonts.inter(
+                        color: AppColors.textMid,
+                        fontSize: 13,
+                      ),
+                    ),
+                    trailing: DropdownButton<String>(
+                      value: _autoRefreshFreq,
+                      underline: const SizedBox(),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Her 6 sagatdan',
+                          child: Text('Her 6 sagatdan'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Her 12 sagatdan',
+                          child: Text('Her 12 sagatdan'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Her 24 sagatdan',
+                          child: Text('Her 24 sagatdan'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Öçürilen',
+                          child: Text('Öçürilen'),
+                        ),
+                      ],
+                      onChanged: (String? newValue) {
+                        if (newValue != null) {
+                          _saveAutoRefreshFreq(newValue);
+                          setModalState(() {});
+                          setState(() {});
+                        }
+                      },
+                    ),
+                  ),
+                  const Divider(height: 24),
+
+                  // Option 4: About App
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.gradStart.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.info_outline_rounded,
+                          color: AppColors.gradStart),
+                    ),
+                    title: Text(
+                      'Programma barada',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'TM Utility v1.0.0 • TM CELL Hyzmaty',
+                      style: GoogleFonts.inter(
+                        color: AppColors.textMid,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -303,7 +915,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             children: [
               _TopBar(
                 selectedSimSlot: _selectedSimSlot,
-                onSimToggle: _toggleSimSlot,
+                onOpenSettings: _showSettingsBottomSheet,
               ),
               const SizedBox(height: 16),
               Text(
@@ -315,7 +927,11 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ),
               ),
               const SizedBox(height: 20),
-              _BalanceCard(balance: _balance, simSlot: _selectedSimSlot),
+              _BalanceCard(
+                balance: _balance,
+                phoneNumber: _phoneNumber,
+                simSlot: _selectedSimSlot,
+              ),
               const SizedBox(height: 24),
               Row(
                 children: [
@@ -365,7 +981,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               const SizedBox(height: 14),
               Center(
                 child: Text(
-                  'Soňky güncelleme: $_lastUpdated',
+                  'Soňky täzelenme: $_lastUpdated',
                   style: GoogleFonts.inter(
                     fontSize: 12,
                     color: AppColors.textLight,
@@ -385,11 +1001,11 @@ class _DashboardScreenState extends State<DashboardScreen>
 // ─── Top Bar ──────────────────────────────────────────────────────────────────
 class _TopBar extends StatelessWidget {
   final int selectedSimSlot;
-  final VoidCallback onSimToggle;
+  final VoidCallback onOpenSettings;
 
   const _TopBar({
     required this.selectedSimSlot,
-    required this.onSimToggle,
+    required this.onOpenSettings,
   });
 
   @override
@@ -437,61 +1053,62 @@ class _TopBar extends StatelessWidget {
         ),
         Row(
           children: [
-            // Dual SIM Badge Switcher
-            GestureDetector(
-              onTap: onSimToggle,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.sim_card_outlined,
-                      size: 16,
-                      color: AppColors.ringInternet,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'SIM ${selectedSimSlot + 1}',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textDark,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
+            // SIM Badge Indicator
             Container(
-              width: 42,
-              height: 42,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: Colors.white,
-                shape: BoxShape.circle,
+                borderRadius: BorderRadius.circular(20),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.07),
+                    color: Colors.black.withValues(alpha: 0.06),
                     blurRadius: 8,
                     offset: const Offset(0, 2),
                   ),
                 ],
               ),
-              child: const Icon(
-                Icons.settings_outlined,
-                color: AppColors.textMid,
-                size: 20,
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.sim_card_outlined,
+                    size: 16,
+                    color: AppColors.ringInternet,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'SIM ${selectedSimSlot + 1}',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textDark,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Settings Button
+            GestureDetector(
+              onTap: onOpenSettings,
+              child: Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.07),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.settings_outlined,
+                  color: AppColors.textMid,
+                  size: 20,
+                ),
               ),
             ),
           ],
@@ -504,8 +1121,14 @@ class _TopBar extends StatelessWidget {
 // ─── Balance Card ─────────────────────────────────────────────────────────────
 class _BalanceCard extends StatelessWidget {
   final double balance;
+  final String phoneNumber;
   final int simSlot;
-  const _BalanceCard({required this.balance, required this.simSlot});
+
+  const _BalanceCard({
+    required this.balance,
+    required this.phoneNumber,
+    required this.simSlot,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -532,17 +1155,17 @@ class _BalanceCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         child: Stack(
           children: [
-            Positioned(
+            const Positioned(
               right: -30,
               top: -20,
               child: _BokehCircle(size: 140, opacity: 0.12),
             ),
-            Positioned(
+            const Positioned(
               left: -20,
               bottom: -30,
               child: _BokehCircle(size: 110, opacity: 0.10),
             ),
-            Positioned(
+            const Positioned(
               right: 60,
               bottom: 10,
               child: _BokehCircle(size: 60, opacity: 0.08),
@@ -572,11 +1195,11 @@ class _BalanceCard extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        '+993 6${simSlot + 5} xxxxxx',
+                        phoneNumber.isNotEmpty ? phoneNumber : 'Nomeri giriziň',
                         style: GoogleFonts.inter(
                           fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.70),
-                          fontWeight: FontWeight.w400,
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],
@@ -839,7 +1462,7 @@ class _RefreshButton extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Text(
-              isRefreshing ? 'Yüklenýär...' : 'Yenile',
+              isRefreshing ? 'Ýüklenýär...' : 'Täzele',
               style: GoogleFonts.inter(
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
