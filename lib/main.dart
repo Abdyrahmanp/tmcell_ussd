@@ -131,6 +131,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final TextEditingController _phoneController =
       TextEditingController(text: '+993 6');
   String? _errorMessage;
+  bool _isVerifying = false;
+  static const _channel = MethodChannel('com.tmutility.app/ussd');
 
   @override
   void initState() {
@@ -146,7 +148,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
-  Future<void> _submitPhoneNumber() async {
+  Future<void> _submitPhoneNumber({bool skipVerification = false}) async {
     final text = _phoneController.text.trim();
     final cleanNumber = text.replaceAll(' ', '');
     // Validate TM CELL phone number format: +993 6X XXXXXX
@@ -161,13 +163,119 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
     setState(() {
       _errorMessage = null;
+      _isVerifying = true;
     });
+
+    String? detectedMsisdn;
+
+    if (!skipVerification && !kIsWeb && Platform.isAndroid) {
+      try {
+        final smsStatus = await Permission.sms.request();
+        final phoneStatus = await Permission.phone.request();
+
+        if (smsStatus.isGranted && phoneStatus.isGranted) {
+          final ussdResponse = await _channel.invokeMethod<String>(
+            'sendUSSD',
+            {'ussdCode': '*222#', 'simSlot': 0},
+          );
+          if (ussdResponse != null && ussdResponse.isNotEmpty) {
+            detectedMsisdn = TMParser.parseMSISDN(ussdResponse);
+          }
+        }
+      } catch (e) {
+        debugPrint('USSD *222# verification error: $e');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isVerifying = false;
+      });
+    }
+
+    // Smart comparison
+    if (detectedMsisdn != null && detectedMsisdn.isNotEmpty) {
+      final digitsEntered = cleanNumber.replaceAll(RegExp(r'\D'), '');
+      final digitsDetected = detectedMsisdn.replaceAll(RegExp(r'\D'), '');
+
+      final entered8 = digitsEntered.length >= 8
+          ? digitsEntered.substring(digitsEntered.length - 8)
+          : digitsEntered;
+      final detected8 = digitsDetected.length >= 8
+          ? digitsDetected.substring(digitsDetected.length - 8)
+          : digitsDetected;
+
+      if (entered8 != detected8) {
+        if (!mounted) return;
+        final shouldProceed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+                SizedBox(width: 8),
+                Text('Nomer Gabat Gelmedi'),
+              ],
+            ),
+            content: Text(
+              'Girizilen nomer: $text\nSIM-den okalan nomer: $detectedMsisdn\n\nNomeriňiz SIM kart bilen gabat gelmedi! Ýöne test üçin dowam edip bilersiňiz.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Ýalňyşlygy Düzet'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00B4D8),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Ýene-de Dowam Et (Test)'),
+              ),
+            ],
+          ),
+        );
+
+        if (shouldProceed != true) {
+          return;
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Nomer dogry tassyklandy! (SIM MSISDN: $detectedMsisdn)'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    }
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('phone_number', text);
+    await prefs.setString('phone_number_sim_0', text);
 
     if (widget.isEditing) {
       if (mounted) Navigator.pop(context, text);
+    } else {
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        );
+      }
+    }
+  }
+
+  Future<void> _skipWithoutNumber() async {
+    const demoNumber = '+993 65 000000';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('phone_number', demoNumber);
+    await prefs.setString('phone_number_sim_0', demoNumber);
+
+    if (widget.isEditing) {
+      if (mounted) Navigator.pop(context, demoNumber);
     } else {
       if (mounted) {
         Navigator.pushReplacement(
@@ -242,7 +350,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Text(
                 widget.isEditing
                     ? 'Täze TM CELL telefon belgiňizi giriziň.'
-                    : 'TM Utility hyzmatyndan peýdalanmak üçin telefon belgiňizi giriziň.',
+                    : 'TM Utility hyzmatyndan peýdalanmak üçin telefon belgiňizi giriziň (*222# arkaly barlandyrylýar).',
                 style: GoogleFonts.inter(
                   fontSize: 15,
                   color: AppColors.textMid,
@@ -326,7 +434,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
               const Spacer(flex: 2),
 
-              // Submit Button
+              // Submit Button with Loading Indicator during *222# USSD check
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -338,7 +446,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     ),
                     elevation: 0,
                   ),
-                  onPressed: _submitPhoneNumber,
+                  onPressed: _isVerifying ? null : () => _submitPhoneNumber(),
                   child: Ink(
                     decoration: BoxDecoration(
                       gradient: AppColors.btnGradient,
@@ -353,31 +461,71 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     ),
                     child: Container(
                       alignment: Alignment.center,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            widget.isEditing ? 'Ýatda saklaň' : 'Dowam et',
-                            style: GoogleFonts.inter(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                              letterSpacing: 0.3,
+                      child: _isVerifying
+                          ? const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.5,
+                                    valueColor:
+                                        AlwaysStoppedAnimation<Color>(Colors.white),
+                                  ),
+                                ),
+                                SizedBox(width: 12),
+                                Text(
+                                  'SIM Barlaanýar (*222#)...',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  widget.isEditing ? 'Ýatda saklaň' : 'Dowam et (*222#)',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                    letterSpacing: 0.3,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                const Icon(
+                                  Icons.arrow_forward_rounded,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                              ],
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Icon(
-                            Icons.arrow_forward_rounded,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                        ],
-                      ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
+
+              // Skip without number button (Test convenience)
+              Center(
+                child: TextButton(
+                  onPressed: _skipWithoutNumber,
+                  child: Text(
+                    'Nomersiz geç (Test üçin)',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      color: AppColors.textMid,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
             ],
           ),
         ),
@@ -448,31 +596,64 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedPhone = prefs.getString('phone_number');
-    final savedSim = prefs.getInt('sim_slot');
-    final savedFreq = prefs.getString('auto_refresh_freq');
+    final savedSim = prefs.getInt('sim_slot') ?? 0;
+    final savedFreq = prefs.getString('auto_refresh_freq') ?? 'Her 6 sagatdan';
 
-    if (mounted) {
-      setState(() {
-        if (savedPhone != null && savedPhone.isNotEmpty) {
-          _phoneNumber = savedPhone;
-        }
-        if (savedSim != null) {
-          _selectedSimSlot = savedSim;
-        }
-        if (savedFreq != null) {
-          _autoRefreshFreq = savedFreq;
-        }
-      });
+    _selectedSimSlot = savedSim;
+    _autoRefreshFreq = savedFreq;
+
+    await _loadSimData(savedSim);
+  }
+
+  Future<void> _loadSimData(int slot) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    setState(() {
+      _selectedSimSlot = slot;
+      _phoneNumber = prefs.getString('phone_number_sim_$slot') ??
+          (slot == 0
+              ? (prefs.getString('phone_number') ?? '+993 65 123456')
+              : '+993 61 987654');
+
+      _balance = prefs.getDouble('balance_sim_$slot') ?? (slot == 0 ? 45.70 : 15.00);
+      _internetRemainingMB =
+          prefs.getDouble('internet_rem_sim_$slot') ?? (slot == 0 ? 2150.4 : 1024.0);
+      _internetTotalGB =
+          prefs.getDouble('internet_tot_sim_$slot') ?? (slot == 0 ? 5.0 : 3.0);
+      _minutesRemaining =
+          prefs.getInt('minutes_rem_sim_$slot') ?? (slot == 0 ? 120 : 45);
+      _minutesTotal =
+          prefs.getInt('minutes_tot_sim_$slot') ?? (slot == 0 ? 300 : 100);
+      _smsRemaining =
+          prefs.getInt('sms_rem_sim_$slot') ?? (slot == 0 ? 50 : 20);
+      _smsTotal =
+          prefs.getInt('sms_tot_sim_$slot') ?? (slot == 0 ? 100 : 50);
+      _lastUpdated =
+          prefs.getString('last_updated_sim_$slot') ?? (slot == 0 ? '14:30' : '--:--');
+    });
+  }
+
+  Future<void> _saveSimData(int slot) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('phone_number_sim_$slot', _phoneNumber);
+    await prefs.setDouble('balance_sim_$slot', _balance);
+    await prefs.setDouble('internet_rem_sim_$slot', _internetRemainingMB);
+    await prefs.setDouble('internet_tot_sim_$slot', _internetTotalGB);
+    await prefs.setInt('minutes_rem_sim_$slot', _minutesRemaining);
+    await prefs.setInt('minutes_tot_sim_$slot', _minutesTotal);
+    await prefs.setInt('sms_rem_sim_$slot', _smsRemaining);
+    await prefs.setInt('sms_tot_sim_$slot', _smsTotal);
+    await prefs.setString('last_updated_sim_$slot', _lastUpdated);
+    if (slot == 0) {
+      await prefs.setString('phone_number', _phoneNumber);
     }
   }
 
   Future<void> _saveSimSlot(int slot) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('sim_slot', slot);
-    setState(() {
-      _selectedSimSlot = slot;
-    });
+    await _loadSimData(slot);
   }
 
   Future<void> _saveAutoRefreshFreq(String freq) async {
@@ -533,8 +714,11 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
     });
 
-    if (updated && _refreshCompleter != null && !_refreshCompleter!.isCompleted) {
-      _refreshCompleter!.complete();
+    if (updated) {
+      _saveSimData(_selectedSimSlot);
+      if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+        _refreshCompleter!.complete();
+      }
     }
   }
 
@@ -554,10 +738,44 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     if (!smsStatus.isGranted || !phoneStatus.isGranted) {
       if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+                SizedBox(width: 8),
+                Text('Rugsat Talap Edilýär'),
+              ],
+            ),
+            content: const Text(
+              'Awtomatiki USSD arama we SMS maglumatlaryny okamak üçin Jaň (CALL_PHONE) we SMS (RECEIVE_SMS) rugsatlary zerurdyr. Haýyş, sazlamalardan rugsat beriň.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Yza'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  openAppSettings();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00B4D8),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Sazlamalara Geç'),
+              ),
+            ],
+          ),
+        );
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Rugsatlar berilmedi. USSD hem-de SMS amaly ýerine ýetirilip bilinmedi.'),
             backgroundColor: Colors.redAccent,
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -569,6 +787,35 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     _refreshCompleter = Completer<void>();
 
+    // Status notification for user when USSD is triggered
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'USSD tetiklenýär (SIM ${_selectedSimSlot + 1}: *0800# we *0805#)...',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFF00B4D8),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+
     // 2. Flexible 12-second Timeout
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 12), () {
@@ -578,16 +825,16 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      // 3. Trigger USSD *0801# and *0805# with dual SIM support
+      // 3. Trigger USSD *0800# (Balance Pop-up) & *0805# (SMS Details) with dual SIM support
       final String? ussd1 = await _channel.invokeMethod<String>(
         'sendUSSD',
-        {'ussdCode': '*0801#', 'simSlot': _selectedSimSlot},
+        {'ussdCode': '*0800#', 'simSlot': _selectedSimSlot},
       );
       if (ussd1 != null && ussd1.isNotEmpty) {
         _processIncomingText(ussd1);
       }
 
-      await Future.delayed(const Duration(milliseconds: 300));
+      await Future.delayed(const Duration(milliseconds: 500));
 
       final String? ussd2 = await _channel.invokeMethod<String>(
         'sendUSSD',
@@ -656,6 +903,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       _lastUpdated = timestamp;
       _balance = (45.70 - (math.Random().nextDouble() * 0.4)).clamp(0.0, 999.0);
     });
+    _saveSimData(_selectedSimSlot);
     _spinController.stop();
     _spinController.reset();
 

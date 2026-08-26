@@ -27,7 +27,7 @@ class MainActivity : FlutterActivity() {
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "sendUSSD" -> {
-                    val ussdCode = call.argument<String>("ussdCode") ?: "*0801#"
+                    val ussdCode = call.argument<String>("ussdCode") ?: "*0800#"
                     val simSlot = call.argument<Int>("simSlot") ?: 0
                     executeUSSD(ussdCode, simSlot, result)
                 }
@@ -51,62 +51,88 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun checkPermissionsGranted(): Boolean {
-        val smsPerm = ActivityCompat.checkSelfPermission(this, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
-        val phonePerm = ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
-        return smsPerm && phonePerm
+        val callPerm = ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+        val phoneStatePerm = ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        val receiveSms = ActivityCompat.checkSelfPermission(this, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
+        return callPerm && phoneStatePerm && receiveSms
     }
 
     private fun executeUSSD(ussdCode: String, simSlot: Int, result: MethodChannel.Result) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            var telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-                result.error("PERMISSION_DENIED", "CALL_PHONE permission required", null)
-                return
-            }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            result.error("PERMISSION_DENIED", "CALL_PHONE izni talap edilýär", null)
+            return
+        }
 
-            try {
-                val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+        val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        var targetTelephonyManager = telephonyManager
+        var targetSubId: Int? = null
+
+        try {
+            val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
                 val activeSubs = subManager?.activeSubscriptionInfoList
                 if (activeSubs != null && simSlot < activeSubs.size) {
-                    val subId = activeSubs[simSlot].subscriptionId
-                    telephonyManager = telephonyManager.createForSubscriptionId(subId)
+                    targetSubId = activeSubs[simSlot].subscriptionId
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        targetTelephonyManager = telephonyManager.createForSubscriptionId(targetSubId)
+                    }
                 }
-            } catch (e: Exception) {
-                // Fallback to default TelephonyManager if subscription query fails
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
-            telephonyManager.sendUssdRequest(
-                ussdCode,
-                object : TelephonyManager.UssdResponseCallback() {
-                    override fun onReceiveUssdResponse(
-                        telephonyManager: TelephonyManager?,
-                        request: String?,
-                        response: CharSequence?
-                    ) {
-                        val responseString = response?.toString() ?: ""
-                        result.success(responseString)
-                    }
-
-                    override fun onReceiveUssdResponseFailed(
-                        telephonyManager: TelephonyManager?,
-                        request: String?,
-                        failureCode: Int
-                    ) {
-                        result.error("USSD_FAILED", "USSD request failed code: $failureCode", null)
-                    }
-                },
-                Handler(Looper.getMainLooper())
-            )
-        } else {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
-                val encodedHash = Uri.encode("#")
-                val cleanCode = ussdCode.replace("#", encodedHash)
-                val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$cleanCode"))
-                startActivity(intent)
-                result.success("USSD dial intent launched")
+                targetTelephonyManager.sendUssdRequest(
+                    ussdCode,
+                    object : TelephonyManager.UssdResponseCallback() {
+                        override fun onReceiveUssdResponse(
+                            telephonyManager: TelephonyManager?,
+                            request: String?,
+                            response: CharSequence?
+                        ) {
+                            val responseString = response?.toString() ?: ""
+                            result.success(responseString)
+                        }
+
+                        override fun onReceiveUssdResponseFailed(
+                            telephonyManager: TelephonyManager?,
+                            request: String?,
+                            failureCode: Int
+                        ) {
+                            dialUSSDFallback(ussdCode, simSlot, targetSubId, result)
+                        }
+                    },
+                    Handler(Looper.getMainLooper())
+                )
             } catch (e: Exception) {
-                result.error("INTENT_ERROR", e.message, null)
+                dialUSSDFallback(ussdCode, simSlot, targetSubId, result)
             }
+        } else {
+            dialUSSDFallback(ussdCode, simSlot, targetSubId, result)
+        }
+    }
+
+    private fun dialUSSDFallback(ussdCode: String, simSlot: Int, subId: Int?, result: MethodChannel.Result) {
+        try {
+            val encodedCode = Uri.encode(ussdCode)
+            val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$encodedCode")).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra("com.android.phone.force.slot", true)
+                putExtra("Cdma_SubId", simSlot)
+                putExtra("simSlot", simSlot)
+                putExtra("com.android.phone.extra.slot", simSlot)
+                if (subId != null) {
+                    putExtra("subscription", subId)
+                    putExtra("subscription_id", subId)
+                }
+            }
+            startActivity(intent)
+            result.success("USSD awtomatiki arama tetiklendi ($ussdCode)")
+        } catch (e: Exception) {
+            result.error("INTENT_ERROR", e.message ?: "Arama säwligi", null)
         }
     }
 }
+

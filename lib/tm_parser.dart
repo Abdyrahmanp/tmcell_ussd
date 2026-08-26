@@ -179,6 +179,24 @@ class TMParser {
     return null;
   }
 
+  /// Parses phone number from *222# USSD pop-up response
+  /// e.g. "MSISDN: 99365123456" or "MSISDN: 65123456" or "Telefonyňyz: +99365123456"
+  static String? parseMSISDN(String text) {
+    final clean = text.replaceAll(' ', '');
+    final regex = RegExp(r'(?:MSISDN:|tel:)?(\+?9936[1-6]\d{6}|\b6[1-6]\d{6}\b|\b9936[1-6]\d{6}\b)', caseSensitive: false);
+    final match = regex.firstMatch(clean);
+    if (match != null && match.groupCount >= 1) {
+      String raw = match.group(1)!;
+      if (!raw.startsWith('+993') && !raw.startsWith('993')) {
+        raw = '+993$raw';
+      } else if (raw.startsWith('993')) {
+        raw = '+$raw';
+      }
+      return raw;
+    }
+    return null;
+  }
+
   /// Parses any TM CELL message and extracts both remaining and total metrics
   static TMData parseMessage(String text) {
     return TMData(
