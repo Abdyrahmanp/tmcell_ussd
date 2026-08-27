@@ -121,7 +121,8 @@ class _AppInitializerState extends State<AppInitializer> {
 // ─── Mandatory Full-Screen Onboarding ─────────────────────────────────────────
 class OnboardingScreen extends StatefulWidget {
   final bool isEditing;
-  const OnboardingScreen({super.key, this.isEditing = false});
+  final int? forcedSimSlot; // Gerekiyor SIM slot (e.g. SIM 2 üçin = 1)
+  const OnboardingScreen({super.key, this.isEditing = false, this.forcedSimSlot});
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -142,7 +143,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _loadCurrentPhone() async {
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString('phone_number');
+    final slot = widget.forcedSimSlot ?? 0;
+    final saved = slot == 1
+        ? prefs.getString('phone_number_sim_1')
+        : prefs.getString('phone_number');
     if (saved != null && saved.isNotEmpty && mounted) {
       _phoneController.text = saved;
     }
@@ -253,8 +257,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('phone_number', text);
-    await prefs.setString('phone_number_sim_0', text);
+    final simSlot = widget.forcedSimSlot ?? 0;
+    await prefs.setString('phone_number_sim_$simSlot', text);
+    if (simSlot == 0) {
+      await prefs.setString('phone_number', text);
+    }
 
     if (widget.isEditing) {
       if (mounted) Navigator.pop(context, text);
@@ -269,12 +276,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _skipWithoutNumber() async {
-    const demoNumber = '+993 65 000000';
+    final simSlot = widget.forcedSimSlot ?? 0;
+    final demoNumber = '+993 6${simSlot == 1 ? '1' : '5'} 000000';
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('phone_number', demoNumber);
-    await prefs.setString('phone_number_sim_0', demoNumber);
+    await prefs.setString('phone_number_sim_$simSlot', demoNumber);
+    if (simSlot == 0) {
+      await prefs.setString('phone_number', demoNumber);
+    }
 
-    if (widget.isEditing) {
+    if (widget.isEditing || widget.forcedSimSlot != null) {
       if (mounted) Navigator.pop(context, demoNumber);
     } else {
       if (mounted) {
@@ -555,14 +565,16 @@ class _DashboardScreenState extends State<DashboardScreen>
   // Dynamic State Variables (Both Remaining & Dynamic Totals)
   double _balance = 45.70;
 
-  double _internetRemainingMB = 2150.4; // 2.1 GB
-  double _internetTotalGB = 5.0;
+  double _internetRemainingMB = 2150.4; // MB
+  double _internetTotalMB = 5120.0;     // MB (5 GB → 5120 MB)
 
   int _minutesRemaining = 120;
   int _minutesTotal = 300;
 
   int _smsRemaining = 50;
   int _smsTotal = 100;
+
+  TMPackageType? _detectedPackage;
 
   Completer<void>? _refreshCompleter;
   Timer? _timeoutTimer;
@@ -619,8 +631,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       _balance = prefs.getDouble('balance_sim_$slot') ?? (slot == 0 ? 45.70 : 15.00);
       _internetRemainingMB =
           prefs.getDouble('internet_rem_sim_$slot') ?? (slot == 0 ? 2150.4 : 1024.0);
-      _internetTotalGB =
-          prefs.getDouble('internet_tot_sim_$slot') ?? (slot == 0 ? 5.0 : 3.0);
+      _internetTotalMB =
+          prefs.getDouble('internet_tot_mb_sim_$slot') ?? (slot == 0 ? 5120.0 : 3072.0);
       _minutesRemaining =
           prefs.getInt('minutes_rem_sim_$slot') ?? (slot == 0 ? 120 : 45);
       _minutesTotal =
@@ -630,7 +642,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       _smsTotal =
           prefs.getInt('sms_tot_sim_$slot') ?? (slot == 0 ? 100 : 50);
       _lastUpdated =
-          prefs.getString('last_updated_sim_$slot') ?? (slot == 0 ? '14:30' : '--:--');
+          prefs.getString('last_updated_sim_$slot') ?? (slot == 0 ? '--:--' : '--:--');
+      _detectedPackage = null;
     });
   }
 
@@ -639,7 +652,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     await prefs.setString('phone_number_sim_$slot', _phoneNumber);
     await prefs.setDouble('balance_sim_$slot', _balance);
     await prefs.setDouble('internet_rem_sim_$slot', _internetRemainingMB);
-    await prefs.setDouble('internet_tot_sim_$slot', _internetTotalGB);
+    await prefs.setDouble('internet_tot_mb_sim_$slot', _internetTotalMB);
     await prefs.setInt('minutes_rem_sim_$slot', _minutesRemaining);
     await prefs.setInt('minutes_tot_sim_$slot', _minutesTotal);
     await prefs.setInt('sms_rem_sim_$slot', _smsRemaining);
@@ -651,6 +664,74 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _saveSimSlot(int slot) async {
+    if (slot == 1) {
+      // SIM 2 saýlananda hasaba alnan nomer barlanýar
+      final prefs = await SharedPreferences.getInstance();
+      final sim2Number = prefs.getString('phone_number_sim_1') ?? '';
+      final hasNumber = sim2Number.isNotEmpty &&
+          sim2Number != '+993 61 987654' &&
+          !sim2Number.contains('000000');
+
+      if (!hasNumber && mounted) {
+        final shouldContinue = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.sim_card_alert_rounded,
+                    color: Colors.orangeAccent),
+                const SizedBox(width: 8),
+                Text(
+                  'SIM 2 Nomeri Ýok',
+                  style: GoogleFonts.inter(
+                      fontWeight: FontWeight.w700, fontSize: 17),
+                ),
+              ],
+            ),
+            content: Text(
+              'Heniz SIM 2 nomerini girizmediňiz.\nHaýyş, SIM 2 telefon belgiňizi giriziň.',
+              style: GoogleFonts.inter(fontSize: 14, height: 1.5),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text('Ýatyr',
+                    style: GoogleFonts.inter(
+                        color: AppColors.textMid, fontWeight: FontWeight.w600)),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00B4D8),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: Text('Nomer Giriziň',
+                    style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+        );
+
+        if (shouldContinue == true && mounted) {
+          final newPhone = await Navigator.push<String>(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const OnboardingScreen(
+                isEditing: true,
+                forcedSimSlot: 1,
+              ),
+            ),
+          );
+          if (newPhone != null && newPhone.isNotEmpty) {
+            final p = await SharedPreferences.getInstance();
+            await p.setString('phone_number_sim_1', newPhone);
+          }
+        }
+        return; // Geçişi iptal et, SIM 1-e gal
+      }
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('sim_slot', slot);
     await _loadSimData(slot);
@@ -689,8 +770,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         _internetRemainingMB = parsed.internetMB!;
         updated = true;
       }
-      if (parsed.totalInternetGB != null) {
-        _internetTotalGB = parsed.totalInternetGB!;
+      if (parsed.totalInternetMB != null) {
+        _internetTotalMB = parsed.totalInternetMB!;
         updated = true;
       }
       if (parsed.minutes != null) {
@@ -709,10 +790,40 @@ class _DashboardScreenState extends State<DashboardScreen>
         _smsTotal = parsed.totalSMS!;
         updated = true;
       }
+      // Package totals override
+      if (parsed.detectedPackage != null) {
+        _detectedPackage = parsed.detectedPackage;
+        _internetTotalMB = parsed.detectedPackage!.totalInternetMB;
+        _minutesTotal = parsed.detectedPackage!.totalMinutes;
+        _smsTotal = parsed.detectedPackage!.totalSMS;
+        updated = true;
+      }
       if (updated) {
         _lastUpdated = timestamp;
       }
     });
+
+    // Paket tapylandygy barada habar ber
+    if (parsed.detectedPackage != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.inventory_2_outlined,
+                  color: Colors.white, size: 18),
+              const SizedBox(width: 8),
+              Text(
+                '${parsed.detectedPackage!.displayName} paketi anyklandy!',
+                style: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+          backgroundColor: AppColors.ringMinutes,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
 
     if (updated) {
       _saveSimData(_selectedSimSlot);
@@ -754,7 +865,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Yza'),
+                child: const Text('Ýatyr'),
               ),
               ElevatedButton(
                 onPressed: () {
@@ -765,7 +876,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   backgroundColor: const Color(0xFF00B4D8),
                   foregroundColor: Colors.white,
                 ),
-                child: const Text('Sazlamalara Geç'),
+                child: const Text('Sazlamalara Git'),
               ),
             ],
           ),
@@ -914,7 +1025,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             children: [
               Icon(Icons.check_circle_outline, color: Colors.white),
               SizedBox(width: 8),
-              Text('Maglumatlar täzelendi! (Simulýasiýa)'),
+              Text('Maglumatlar täzelendi! (Synag režeýimi)'),
             ],
           ),
           backgroundColor: Color(0xFF00B4D8),
@@ -1144,13 +1255,19 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    final double internetGB = _internetRemainingMB / 1024.0;
+    // Internet – hemme zat MB-da görkezilýär
     final double internetProgress =
-        _internetTotalGB > 0 ? (internetGB / _internetTotalGB).clamp(0.0, 1.0) : 0.0;
+        _internetTotalMB > 0
+            ? (_internetRemainingMB / _internetTotalMB).clamp(0.0, 1.0)
+            : 0.0;
     final double minutesProgress =
         _minutesTotal > 0 ? (_minutesRemaining / _minutesTotal).clamp(0.0, 1.0) : 0.0;
     final double smsProgress =
         _smsTotal > 0 ? (_smsRemaining / _smsTotal).clamp(0.0, 1.0) : 0.0;
+
+    // Internet display helpers – MB, tercihen 0-dan kiçi bolmazlygy üçin
+    final int remMB = _internetRemainingMB.round().clamp(0, 999999);
+    final int totMB = _internetTotalMB.round().clamp(0, 999999);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -1179,6 +1296,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 balance: _balance,
                 phoneNumber: _phoneNumber,
                 simSlot: _selectedSimSlot,
+                detectedPackage: _detectedPackage,
               ),
               const SizedBox(height: 24),
               Row(
@@ -1188,8 +1306,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                       icon: Icons.cloud_outlined,
                       iconColor: AppColors.ringInternet,
                       label: 'Internet',
-                      valueText: '${internetGB.toStringAsFixed(1)} GB',
-                      subText: '/ ${_internetTotalGB.toStringAsFixed(0)} GB',
+                      valueText: '$remMB MB',
+                      subText: '/ $totMB MB',
                       progress: internetProgress,
                       ringColor: AppColors.ringInternet,
                     ),
@@ -1371,11 +1489,13 @@ class _BalanceCard extends StatelessWidget {
   final double balance;
   final String phoneNumber;
   final int simSlot;
+  final TMPackageType? detectedPackage;
 
   const _BalanceCard({
     required this.balance,
     required this.phoneNumber,
     required this.simSlot,
+    this.detectedPackage,
   });
 
   @override
@@ -1465,20 +1585,42 @@ class _BalanceCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Icon(
-                        Icons.trending_up_rounded,
-                        color: Colors.white.withValues(alpha: 0.70),
-                        size: 14,
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.trending_up_rounded,
+                            color: Colors.white.withValues(alpha: 0.70),
+                            size: 14,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Esasy hasap (SIM ${simSlot + 1})',
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              color: Colors.white.withValues(alpha: 0.70),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Esasy hasap (SIM ${simSlot + 1})',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.70),
+                      if (detectedPackage != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.25),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            detectedPackage!.displayName,
+                            style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                            ),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ],

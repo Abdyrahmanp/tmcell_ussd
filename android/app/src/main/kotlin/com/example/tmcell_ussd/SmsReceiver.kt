@@ -10,39 +10,64 @@ class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "SmsReceiver"
-        
+
         // Callback listener to notify MainActivity / MethodChannel
         var onSmsReceivedListener: ((sender: String, messageBody: String) -> Unit)? = null
 
-        // Known TM CELL shortcodes
-        private val TARGET_SENDERS = listOf("0801", "100", "0800", "0805", "TMCELL", "TM CELL")
+        // Known TM CELL shortcodes and keywords that identify operator messages
+        private val TARGET_SENDERS = listOf(
+            "0800", "0801", "0805",
+            "100", "101",
+            "TMCELL", "TM CELL", "TmCell"
+        )
+
+        // Content keywords that reliably identify TM CELL messages regardless of sender
+        private val CONTENT_KEYWORDS = listOf(
+            "pakedyn gutarmagyna",
+            "balansynyz",
+            "MSISDN",
+            "TMT",
+            "sowgat",
+            "Sowgat"
+        )
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
-            val pdus = intent.extras?.get("pdus") as? Array<*> ?: return
-            val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
 
-            for (message in messages) {
-                val sender = message.displayOriginatingAddress ?: message.originatingAddress ?: ""
-                val body = message.messageBody ?: ""
+        val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+        if (messages.isNullOrEmpty()) return
 
-                Log.d(TAG, "Incoming SMS from [$sender]: $body")
+        for (message in messages) {
+            val sender = message.displayOriginatingAddress
+                ?: message.originatingAddress
+                ?: ""
+            val body = message.messageBody ?: ""
 
-                val isTMCell = TARGET_SENDERS.any { target ->
-                    sender.contains(target, ignoreCase = true)
-                } || body.contains("pakedyn gutarmagyna", ignoreCase = true) 
-                  || body.contains("balansynyz", ignoreCase = true)
+            Log.d(TAG, "Incoming SMS from [$sender]: $body")
 
-                if (isTMCell) {
-                    Log.d(TAG, "Intercepting TM CELL SMS silently. Aborting broadcast.")
-                    
-                    // Abort notification and sound display on Android
+            val isTMCellBySender = TARGET_SENDERS.any { target ->
+                sender.contains(target, ignoreCase = true)
+            }
+
+            val isTMCellByContent = CONTENT_KEYWORDS.any { keyword ->
+                body.contains(keyword, ignoreCase = true)
+            }
+
+            if (isTMCellBySender || isTMCellByContent) {
+                Log.d(TAG, "TM CELL SMS anyklady — arka planda sessiz ýuwulýar.")
+
+                // ── Ses we bildiriş ýok: broadcast serpilýär ──────────────────
+                // abortBroadcast() diňe sms_received üçin ordered broadcast-da işleýär.
+                // priority=2147483647 Manifest-da kesgitlenenden işleýär.
+                try {
                     abortBroadcast()
-
-                    // Dispatch to Flutter MethodChannel listener
-                    onSmsReceivedListener?.invoke(sender, body)
+                } catch (e: Exception) {
+                    Log.w(TAG, "abortBroadcast çäklendirilen (Android 10+): ${e.message}")
                 }
+
+                // ── Flutter MethodChannel arkaly ugrat ────────────────────────
+                onSmsReceivedListener?.invoke(sender, body)
             }
         }
     }
