@@ -585,16 +585,16 @@ class _DashboardScreenState extends State<DashboardScreen>
   String _autoRefreshFreq = 'Her 6 sagatdan'; // Auto refresh frequency
 
   // Dynamic State Variables (Both Remaining & Dynamic Totals)
-  double _balance = 45.70;
+  double _balance = 0.0;
 
-  double _internetRemainingMB = 2150.4; // MB
-  double _internetTotalMB = 5120.0;     // MB (5 GB → 5120 MB)
+  double _internetRemainingMB = 0.0; // MB
+  double _internetTotalMB = 0.0;     // MB
 
-  int _minutesRemaining = 120;
-  int _minutesTotal = 300;
+  int _minutesRemaining = 0;
+  int _minutesTotal = 0;
 
-  int _smsRemaining = 50;
-  int _smsTotal = 100;
+  int _smsRemaining = 0;
+  int _smsTotal = 0;
 
   TMPackageType? _detectedPackage;
 
@@ -642,6 +642,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     _startAutoRefreshTimer(savedFreq);
     _getSignalStrength();
     await _loadSimData(savedSim);
+
+    // Uygulama ilk açıldığında henüz veri çekilmemişse otomatik olarak güncelle
+    if (_lastUpdated == '--:--' && !_isRefreshing && !kIsWeb && Platform.isAndroid) {
+      _handleRefresh();
+    }
   }
 
   Future<void> _getSignalStrength() async {
@@ -699,21 +704,21 @@ class _DashboardScreenState extends State<DashboardScreen>
               ? (prefs.getString('phone_number') ?? '+993 65 123456')
               : '+993 61 987654');
 
-      _balance = prefs.getDouble('balance_sim_$slot') ?? (slot == 0 ? 45.70 : 15.00);
+      _balance = prefs.getDouble('balance_sim_$slot') ?? 0.0;
       _internetRemainingMB =
-          prefs.getDouble('internet_rem_sim_$slot') ?? (slot == 0 ? 2150.4 : 1024.0);
+          prefs.getDouble('internet_rem_sim_$slot') ?? 0.0;
       _internetTotalMB =
-          prefs.getDouble('internet_tot_mb_sim_$slot') ?? (slot == 0 ? 5120.0 : 3072.0);
+          prefs.getDouble('internet_tot_mb_sim_$slot') ?? 0.0;
       _minutesRemaining =
-          prefs.getInt('minutes_rem_sim_$slot') ?? (slot == 0 ? 120 : 45);
+          prefs.getInt('minutes_rem_sim_$slot') ?? 0;
       _minutesTotal =
-          prefs.getInt('minutes_tot_sim_$slot') ?? (slot == 0 ? 300 : 100);
+          prefs.getInt('minutes_tot_sim_$slot') ?? 0;
       _smsRemaining =
-          prefs.getInt('sms_rem_sim_$slot') ?? (slot == 0 ? 50 : 20);
+          prefs.getInt('sms_rem_sim_$slot') ?? 0;
       _smsTotal =
-          prefs.getInt('sms_tot_sim_$slot') ?? (slot == 0 ? 100 : 50);
+          prefs.getInt('sms_tot_sim_$slot') ?? 0;
       _lastUpdated =
-          prefs.getString('last_updated_sim_$slot') ?? (slot == 0 ? '--:--' : '--:--');
+          prefs.getString('last_updated_sim_$slot') ?? '--:--';
       _detectedPackage = null;
     });
   }
@@ -821,19 +826,20 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<dynamic> _nativeMethodCallHandler(MethodCall call) async {
     if (call.method == 'onSmsReceived') {
       final Map<dynamic, dynamic> args = call.arguments;
-      final String body = args['body'] ?? '';
+      final String body   = args['body']   ?? '';
       final String sender = args['sender'] ?? '';
-      final String msgId = args['msgId'] ?? '';
+      // 1. Maglumatlary derrew işle we UI-ny täzele
       _processIncomingText(body);
-      // SMS alyndy — ony yzky tarapda sessiz öçür
-      if (!kIsWeb && Platform.isAndroid) {
+      // 2. SMS'i yzky tarapda sessiz öçürmäge synanyş (Android 10+ çäklendirilen bolup biler)
+      if (!kIsWeb && Platform.isAndroid && body.isNotEmpty) {
         try {
-          await _channel.invokeMethod('deleteSms', {
+          await _channel.invokeMethod<bool>('deleteSms', {
             'sender': sender,
-            'msgId': msgId,
-            'body': body,
+            'body':   body,
           });
-        } catch (_) {}
+        } catch (_) {
+          // Öçürmek başa barmasa hem maglumatlar eýýäm täzelendi — dowam et
+        }
       }
     }
   }
@@ -1023,55 +1029,39 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      // 3. Trigger USSD *0800# (Balance) & *0805# (Package details) with dual SIM support
-      bool anyUpdated = false;
+      // 3. *0800# (Balans) we *0805# (Paket maglumatlary) USSD ibermek
+      //
+      // Akym:
+      //   A) TelephonyManager.UssdResponseCallback işlese → jogap teksti
+      //      göni Flutter-a gelýär → _processIncomingText → completer tamamlanýar
+      //   B) dialUSSDFallback işlese → telefon programasy USSD açýar →
+      //      operator SMS ibermeli → SmsReceiver tutýar → onSmsReceived →
+      //      _processIncomingText → completer tamamlanýar
+      //   Her iki ýolda hem completer tamamlanandan soň "täzelendi" habar çykýar.
 
       final String? ussd1 = await _channel.invokeMethod<String>(
         'sendUSSD',
         {'ussdCode': '*0800#', 'simSlot': _selectedSimSlot},
       );
+      // USSD jogabyny nähili bolanda-da işle; parser zerur sahalary çykaryp
+      // alýar, başga zat parse edilmese updated=false galar we completer açyk galýar.
       if (ussd1 != null && ussd1.isNotEmpty) {
-        final parsed1 = TMParser.parseMessage(ussd1);
-        if (parsed1.balance != null || parsed1.internetMB != null ||
-            parsed1.minutes != null || parsed1.sms != null) {
-          _processIncomingText(ussd1);
-          anyUpdated = true;
-          // USSD jogaby balance içerse completer'y derrew tamamla
-          if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
-            _refreshCompleter!.complete();
-          }
-        }
+        _processIncomingText(ussd1);
       }
 
-      await Future.delayed(const Duration(milliseconds: 600));
+      await Future.delayed(const Duration(milliseconds: 700));
 
       final String? ussd2 = await _channel.invokeMethod<String>(
         'sendUSSD',
         {'ussdCode': '*0805#', 'simSlot': _selectedSimSlot},
       );
       if (ussd2 != null && ussd2.isNotEmpty) {
-        final parsed2 = TMParser.parseMessage(ussd2);
-        if (parsed2.balance != null || parsed2.internetMB != null ||
-            parsed2.minutes != null || parsed2.sms != null) {
-          _processIncomingText(ussd2);
-          anyUpdated = true;
-          if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
-            _refreshCompleter!.complete();
-          }
-        }
+        _processIncomingText(ussd2);
       }
 
-      // Eğer USSD doğrudan yanıt vermediyse SMS'i bekle (maks timeout süresine kadar)
-      if (!anyUpdated) {
-        try {
-          await _refreshCompleter!.future;
-        } catch (_) {}
-      } else {
-        // Zaten güncellendi, completer bitmediyse tamamla
-        if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
-          _refreshCompleter!.complete();
-        }
-      }
+      // Completer heniz tamamlanmadyk bolsa (USSD-de parse edilýän zat ýokdyr),
+      // SMS gelýänçä ýa-da timeout-a çenli garaş.
+      await _refreshCompleter!.future;
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1092,7 +1082,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       await _runMockSimulation();
       return;
     } catch (e) {
-      if (e == 'TIMEOUT' && mounted) {
+      if (e.toString().contains('TIMEOUT') && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Operatordan jogap alynmady. Täzeden synanyşyň.'),
@@ -1104,9 +1094,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     } finally {
       _timeoutTimer?.cancel();
       if (mounted) {
-        setState(() {
-          _isRefreshing = false;
-        });
+        setState(() => _isRefreshing = false);
         _spinController.stop();
         _spinController.reset();
       }

@@ -9,20 +9,19 @@ import android.util.Log
 class SmsReceiver : BroadcastReceiver() {
 
     companion object {
-        private const val TAG = "SmsReceiver"
+        private const val TAG = "TmUtility"
 
-        // Callback listener to notify MainActivity / MethodChannel
-        // msgId – SMS'in ContentProvider'daki _id değeri (silmek için)
-        var onSmsReceivedListener: ((sender: String, messageBody: String, msgId: String) -> Unit)? = null
+        /** Flutter/MethodChannel-a habar ibermek üçin callback */
+        var onSmsReceivedListener: ((sender: String, messageBody: String) -> Unit)? = null
 
-        // Known TM CELL shortcodes and keywords that identify operator messages
+        /** TM CELL gysga sanlary */
         private val TARGET_SENDERS = listOf(
             "0800", "0801", "0805",
-            "100", "101",
+            "100",  "101",
             "TMCELL", "TM CELL", "TmCell"
         )
 
-        // Content keywords that reliably identify TM CELL messages regardless of sender
+        /** Mazmuny boýunça TM CELL habarlary tanaýan açar sözler */
         private val CONTENT_KEYWORDS = listOf(
             "pakedyn gutarmagyna",
             "balansynyz",
@@ -45,32 +44,19 @@ class SmsReceiver : BroadcastReceiver() {
                 ?: ""
             val body = message.messageBody ?: ""
 
-            Log.d(TAG, "Incoming SMS from [$sender]: $body")
+            Log.d(TAG, "SMS geldi [$sender]: ${body.take(80)}")
 
-            val isTMCellBySender = TARGET_SENDERS.any { target ->
-                sender.contains(target, ignoreCase = true)
-            }
-
-            val isTMCellByContent = CONTENT_KEYWORDS.any { keyword ->
-                body.contains(keyword, ignoreCase = true)
-            }
+            val isTMCellBySender  = TARGET_SENDERS.any  { sender.contains(it, ignoreCase = true) }
+            val isTMCellByContent = CONTENT_KEYWORDS.any { body.contains(it, ignoreCase = true) }
 
             if (isTMCellBySender || isTMCellByContent) {
-                Log.d(TAG, "TM CELL SMS anyklady — arka planda sessiz ýuwulýar.")
+                Log.d(TAG, "TM CELL SMS anyklady — Flutter-a iberilýär")
 
-                // ── Ses we bildiriş ýok: broadcast serpilýär ──────────────────
-                // abortBroadcast() diňe sms_received üçin ordered broadcast-da işleýär.
-                // priority=2147483647 Manifest-da kesgitlenenden işleýär.
-                try {
-                    abortBroadcast()
-                } catch (e: Exception) {
-                    Log.w(TAG, "abortBroadcast çäklendirilen (Android 10+): ${e.message}")
-                }
+                // Ordered broadcast-da SMS_RECEIVED-y saklamagy synanyş.
+                // Android 10+ (Q+) üçin bu işlemeýär, ýöne synanyşmak zyýan etmeýär.
+                try { abortBroadcast() } catch (_: Exception) {}
 
-                // msgId – ContentProvider'dan soňrak _id arkaly SMS'i öçürmek üçin
-                // Heniz SMS ContentProvider'a ýazylmadyk bolup biler, şonuň üçin
-                // sender + body kombinasiýasyny geçirýäris.
-                onSmsReceivedListener?.invoke(sender, body, "")
+                onSmsReceivedListener?.invoke(sender, body)
             }
         }
     }

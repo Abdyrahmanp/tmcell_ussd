@@ -22,7 +22,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "com.tmutility.app/ussd"
-    private val TAG = "MainActivity"
+    private val TAG = "TmUtility"
     private var methodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -33,7 +33,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "sendUSSD" -> {
                     val ussdCode = call.argument<String>("ussdCode") ?: "*0800#"
-                    val simSlot = call.argument<Int>("simSlot") ?: 0
+                    val simSlot  = call.argument<Int>("simSlot")    ?: 0
                     executeUSSD(ussdCode, simSlot, result)
                 }
                 "getSignalStrength" -> {
@@ -41,93 +41,77 @@ class MainActivity : FlutterActivity() {
                     getSignalLevel(simSlot, result)
                 }
                 "checkPermissions" -> {
-                    val granted = checkPermissionsGranted()
-                    result.success(granted)
+                    result.success(checkPermissionsGranted())
                 }
                 "deleteSms" -> {
-                    // Flutter tarapyndan TM CELL SMS'ini sessiz öçürmek üçin çagyrylar
+                    // Flutter TM CELL SMS'ini sessiz öçürmek üçin çagyrýar
                     val sender = call.argument<String>("sender") ?: ""
                     val body   = call.argument<String>("body")   ?: ""
-                    val msgId  = call.argument<String>("msgId")  ?: ""
-                    deleteTmCellSms(sender, body, msgId)
-                    result.success(true)
+                    val deleted = deleteTmCellSms(sender, body)
+                    result.success(deleted)
                 }
                 else -> result.notImplemented()
             }
         }
 
-        SmsReceiver.onSmsReceivedListener = { sender, messageBody, msgId ->
+        // SmsReceiver → Flutter köprüsi
+        SmsReceiver.onSmsReceivedListener = { sender, messageBody ->
             Handler(Looper.getMainLooper()).post {
                 val data = mapOf(
                     "sender" to sender,
-                    "body"   to messageBody,
-                    "msgId"  to msgId
+                    "body"   to messageBody
                 )
                 methodChannel?.invokeMethod("onSmsReceived", data)
             }
         }
     }
 
-    // ── SMS Silme (ContentProvider) ───────────────────────────────────────────
-    private fun deleteTmCellSms(sender: String, body: String, msgId: String) {
+    // ── SMS'i ContentProvider arkaly sessiz öçür ──────────────────────────────
+    private fun deleteTmCellSms(sender: String, body: String): Boolean {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_SMS)
             != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "READ_SMS rugsady ýok – SMS öçürilip bilinmedi")
-            return
+            Log.w(TAG, "READ_SMS rugsady ýok – SMS öçürilmedi")
+            return false
         }
 
-        try {
-            val uri = Telephony.Sms.Inbox.CONTENT_URI
+        return try {
+            // Inbox-dan sender + ilkinji 60 simwol bilen tap
+            val shortBody = if (body.length > 60) body.substring(0, 60) else body
+            val cursor: Cursor? = contentResolver.query(
+                Telephony.Sms.Inbox.CONTENT_URI,
+                arrayOf("_id"),
+                "address LIKE ? AND body LIKE ?",
+                arrayOf("%$sender%", "%$shortBody%"),
+                "date DESC LIMIT 3"
+            )
             var deleted = 0
-
-            // 1. Önce msgId ile direkt silmeyi dene
-            if (msgId.isNotEmpty()) {
-                val id = msgId.toLongOrNull()
-                if (id != null) {
-                    val specificUri = ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
-                    deleted = contentResolver.delete(specificUri, null, null)
-                    Log.d(TAG, "msgId=$msgId bilen $deleted SMS öçürildi")
+            cursor?.use {
+                while (it.moveToNext()) {
+                    val id = it.getLong(it.getColumnIndexOrThrow("_id"))
+                    val deleteUri = ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
+                    deleted += contentResolver.delete(deleteUri, null, null)
                 }
             }
-
-            // 2. Eğer msgId yoksa veya silme olmadıysa, sender+body ile bul ve sil
-            if (deleted == 0) {
-                val cursor: Cursor? = contentResolver.query(
-                    uri,
-                    arrayOf("_id", "address", "body"),
-                    "address LIKE ? AND body = ?",
-                    arrayOf("%$sender%", body),
-                    "date DESC"
-                )
-                cursor?.use {
-                    while (it.moveToNext()) {
-                        val id = it.getLong(it.getColumnIndexOrThrow("_id"))
-                        val deleteUri = ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
-                        val count = contentResolver.delete(deleteUri, null, null)
-                        deleted += count
-                        Log.d(TAG, "SMS _id=$id öçürildi (sender=$sender)")
-                        if (count > 0) break // Ilkinji tabylany öçür
-                    }
-                }
-            }
-
-            if (deleted == 0) {
-                Log.w(TAG, "Öçürmek üçin SMS tapylmady (sender=$sender)")
-            }
+            Log.d(TAG, "TM CELL SMS: $deleted sany öçürildi (sender=$sender)")
+            deleted > 0
         } catch (e: Exception) {
             Log.e(TAG, "SMS öçürmek säwligi: ${e.message}")
+            false
         }
     }
 
     private fun checkPermissionsGranted(): Boolean {
-        val callPerm = ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
-        val phoneStatePerm = ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-        val receiveSms = ActivityCompat.checkSelfPermission(this, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
-        return callPerm && phoneStatePerm && receiveSms
+        val call    = ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+        val phone   = ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+        val sms     = ActivityCompat.checkSelfPermission(this, Manifest.permission.RECEIVE_SMS)
+        return call == PackageManager.PERMISSION_GRANTED &&
+               phone == PackageManager.PERMISSION_GRANTED &&
+               sms == PackageManager.PERMISSION_GRANTED
     }
 
     private fun executeUSSD(ussdCode: String, simSlot: Int, result: MethodChannel.Result) {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+            != PackageManager.PERMISSION_GRANTED) {
             result.error("PERMISSION_DENIED", "CALL_PHONE izni talap edilýär", null)
             return
         }
@@ -138,12 +122,14 @@ class MainActivity : FlutterActivity() {
 
         try {
             val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED) {
                 val activeSubs = subManager?.activeSubscriptionInfoList
                 if (activeSubs != null && simSlot < activeSubs.size) {
                     targetSubId = activeSubs[simSlot].subscriptionId
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        targetTelephonyManager = telephonyManager.createForSubscriptionId(targetSubId)
+                        targetTelephonyManager =
+                            telephonyManager.createForSubscriptionId(targetSubId)
                     }
                 }
             }
@@ -157,19 +143,19 @@ class MainActivity : FlutterActivity() {
                     ussdCode,
                     object : TelephonyManager.UssdResponseCallback() {
                         override fun onReceiveUssdResponse(
-                            telephonyManager: TelephonyManager?,
+                            tm: TelephonyManager?,
                             request: String?,
                             response: CharSequence?
                         ) {
-                            val responseString = response?.toString() ?: ""
-                            result.success(responseString)
+                            result.success(response?.toString() ?: "")
                         }
 
                         override fun onReceiveUssdResponseFailed(
-                            telephonyManager: TelephonyManager?,
+                            tm: TelephonyManager?,
                             request: String?,
                             failureCode: Int
                         ) {
+                            // UssdResponseCallback başa barmady – klassik arama usulyna geç
                             dialUSSDFallback(ussdCode, simSlot, targetSubId, result)
                         }
                     },
@@ -183,7 +169,12 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun dialUSSDFallback(ussdCode: String, simSlot: Int, subId: Int?, result: MethodChannel.Result) {
+    private fun dialUSSDFallback(
+        ussdCode: String,
+        simSlot: Int,
+        subId: Int?,
+        result: MethodChannel.Result
+    ) {
         try {
             val encodedCode = Uri.encode(ussdCode)
             val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$encodedCode")).apply {
@@ -192,13 +183,14 @@ class MainActivity : FlutterActivity() {
                 putExtra("Cdma_SubId", simSlot)
                 putExtra("simSlot", simSlot)
                 putExtra("com.android.phone.extra.slot", simSlot)
-                if (subId != null) {
-                    putExtra("subscription", subId)
-                    putExtra("subscription_id", subId)
+                subId?.let {
+                    putExtra("subscription", it)
+                    putExtra("subscription_id", it)
                 }
             }
             startActivity(intent)
-            result.success("USSD awtomatiki arama tetiklendi ($ussdCode)")
+            // Jogap SMS arkaly geler – Flutter SMS-i SmsReceiver arkaly alarys
+            result.success("")
         } catch (e: Exception) {
             result.error("INTENT_ERROR", e.message ?: "Arama säwligi", null)
         }
@@ -210,8 +202,10 @@ class MainActivity : FlutterActivity() {
             val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
             var targetManager = telephonyManager
 
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
-                val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED) {
+                val subManager =
+                    getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
                 val activeSubs = subManager?.activeSubscriptionInfoList
                 if (activeSubs != null && simSlot < activeSubs.size) {
                     val subId = activeSubs[simSlot].subscriptionId
@@ -222,10 +216,7 @@ class MainActivity : FlutterActivity() {
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val signalStrength = targetManager.signalStrength
-                if (signalStrength != null) {
-                    signalLevel = signalStrength.level
-                }
+                signalLevel = targetManager.signalStrength?.level ?: 4
             }
         } catch (e: Exception) {
             e.printStackTrace()
