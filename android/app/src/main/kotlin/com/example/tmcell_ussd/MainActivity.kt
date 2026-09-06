@@ -1,15 +1,19 @@
 package com.example.tmcell_ussd
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Telephony
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
+import android.util.Log
 import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -18,6 +22,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "com.tmutility.app/ussd"
+    private val TAG = "MainActivity"
     private var methodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -39,18 +44,78 @@ class MainActivity : FlutterActivity() {
                     val granted = checkPermissionsGranted()
                     result.success(granted)
                 }
+                "deleteSms" -> {
+                    // Flutter tarapyndan TM CELL SMS'ini sessiz öçürmek üçin çagyrylar
+                    val sender = call.argument<String>("sender") ?: ""
+                    val body   = call.argument<String>("body")   ?: ""
+                    val msgId  = call.argument<String>("msgId")  ?: ""
+                    deleteTmCellSms(sender, body, msgId)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
 
-        SmsReceiver.onSmsReceivedListener = { sender, messageBody ->
+        SmsReceiver.onSmsReceivedListener = { sender, messageBody, msgId ->
             Handler(Looper.getMainLooper()).post {
                 val data = mapOf(
                     "sender" to sender,
-                    "body" to messageBody
+                    "body"   to messageBody,
+                    "msgId"  to msgId
                 )
                 methodChannel?.invokeMethod("onSmsReceived", data)
             }
+        }
+    }
+
+    // ── SMS Silme (ContentProvider) ───────────────────────────────────────────
+    private fun deleteTmCellSms(sender: String, body: String, msgId: String) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_SMS)
+            != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "READ_SMS rugsady ýok – SMS öçürilip bilinmedi")
+            return
+        }
+
+        try {
+            val uri = Telephony.Sms.Inbox.CONTENT_URI
+            var deleted = 0
+
+            // 1. Önce msgId ile direkt silmeyi dene
+            if (msgId.isNotEmpty()) {
+                val id = msgId.toLongOrNull()
+                if (id != null) {
+                    val specificUri = ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
+                    deleted = contentResolver.delete(specificUri, null, null)
+                    Log.d(TAG, "msgId=$msgId bilen $deleted SMS öçürildi")
+                }
+            }
+
+            // 2. Eğer msgId yoksa veya silme olmadıysa, sender+body ile bul ve sil
+            if (deleted == 0) {
+                val cursor: Cursor? = contentResolver.query(
+                    uri,
+                    arrayOf("_id", "address", "body"),
+                    "address LIKE ? AND body = ?",
+                    arrayOf("%$sender%", body),
+                    "date DESC"
+                )
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        val id = it.getLong(it.getColumnIndexOrThrow("_id"))
+                        val deleteUri = ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id)
+                        val count = contentResolver.delete(deleteUri, null, null)
+                        deleted += count
+                        Log.d(TAG, "SMS _id=$id öçürildi (sender=$sender)")
+                        if (count > 0) break // Ilkinji tabylany öçür
+                    }
+                }
+            }
+
+            if (deleted == 0) {
+                Log.w(TAG, "Öçürmek üçin SMS tapylmady (sender=$sender)")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "SMS öçürmek säwligi: ${e.message}")
         }
     }
 
@@ -168,4 +233,3 @@ class MainActivity : FlutterActivity() {
         result.success(signalLevel)
     }
 }
-

@@ -822,7 +822,19 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (call.method == 'onSmsReceived') {
       final Map<dynamic, dynamic> args = call.arguments;
       final String body = args['body'] ?? '';
+      final String sender = args['sender'] ?? '';
+      final String msgId = args['msgId'] ?? '';
       _processIncomingText(body);
+      // SMS alyndy — ony yzky tarapda sessiz öçür
+      if (!kIsWeb && Platform.isAndroid) {
+        try {
+          await _channel.invokeMethod('deleteSms', {
+            'sender': sender,
+            'msgId': msgId,
+            'body': body,
+          });
+        } catch (_) {}
+      }
     }
   }
 
@@ -919,6 +931,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     // 1. Permission Check for SMS & Phone on Android
     final smsStatus = await Permission.sms.request();
     final phoneStatus = await Permission.phone.request();
+    // READ_SMS – TM CELL SMS'ini ContentProvider-dan öçürmek üçin zerur
+    await Permission.storage.request();
 
     if (!smsStatus.isGranted || !phoneStatus.isGranted) {
       if (mounted) {
@@ -1009,27 +1023,55 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     try {
-      // 3. Trigger USSD *0800# (Balance Pop-up) & *0805# (SMS Details) with dual SIM support
+      // 3. Trigger USSD *0800# (Balance) & *0805# (Package details) with dual SIM support
+      bool anyUpdated = false;
+
       final String? ussd1 = await _channel.invokeMethod<String>(
         'sendUSSD',
         {'ussdCode': '*0800#', 'simSlot': _selectedSimSlot},
       );
       if (ussd1 != null && ussd1.isNotEmpty) {
-        _processIncomingText(ussd1);
+        final parsed1 = TMParser.parseMessage(ussd1);
+        if (parsed1.balance != null || parsed1.internetMB != null ||
+            parsed1.minutes != null || parsed1.sms != null) {
+          _processIncomingText(ussd1);
+          anyUpdated = true;
+          // USSD jogaby balance içerse completer'y derrew tamamla
+          if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+            _refreshCompleter!.complete();
+          }
+        }
       }
 
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 600));
 
       final String? ussd2 = await _channel.invokeMethod<String>(
         'sendUSSD',
         {'ussdCode': '*0805#', 'simSlot': _selectedSimSlot},
       );
       if (ussd2 != null && ussd2.isNotEmpty) {
-        _processIncomingText(ussd2);
+        final parsed2 = TMParser.parseMessage(ussd2);
+        if (parsed2.balance != null || parsed2.internetMB != null ||
+            parsed2.minutes != null || parsed2.sms != null) {
+          _processIncomingText(ussd2);
+          anyUpdated = true;
+          if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+            _refreshCompleter!.complete();
+          }
+        }
       }
 
-      // Await completion (either instant operator response or timeout)
-      await _refreshCompleter!.future;
+      // Eğer USSD doğrudan yanıt vermediyse SMS'i bekle (maks timeout süresine kadar)
+      if (!anyUpdated) {
+        try {
+          await _refreshCompleter!.future;
+        } catch (_) {}
+      } else {
+        // Zaten güncellendi, completer bitmediyse tamamla
+        if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+          _refreshCompleter!.complete();
+        }
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
