@@ -31,6 +31,10 @@ class MainActivity : FlutterActivity() {
                     val simSlot = call.argument<Int>("simSlot") ?: 0
                     executeUSSD(ussdCode, simSlot, result)
                 }
+                "getSignalStrength" -> {
+                    val simSlot = call.argument<Int>("simSlot") ?: 0
+                    getSignalLevel(simSlot, result)
+                }
                 "checkPermissions" -> {
                     val granted = checkPermissionsGranted()
                     result.success(granted)
@@ -133,6 +137,35 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             result.error("INTENT_ERROR", e.message ?: "Arama säwligi", null)
         }
+    }
+
+    private fun getSignalLevel(simSlot: Int, result: MethodChannel.Result) {
+        var signalLevel = 4
+        try {
+            val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            var targetManager = telephonyManager
+
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                val subManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+                val activeSubs = subManager?.activeSubscriptionInfoList
+                if (activeSubs != null && simSlot < activeSubs.size) {
+                    val subId = activeSubs[simSlot].subscriptionId
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        targetManager = telephonyManager.createForSubscriptionId(subId)
+                    }
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val signalStrength = targetManager.signalStrength
+                if (signalStrength != null) {
+                    signalLevel = signalStrength.level
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        result.success(signalLevel)
     }
 }
 

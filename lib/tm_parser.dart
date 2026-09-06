@@ -108,6 +108,84 @@ extension TMPackageTypeExtension on TMPackageType {
   }
 }
 
+// ─── Ready Internet Package Model ────────────────────────────────────────────
+class InternetPackage {
+  final String id;
+  final String name;
+  final String dataSize;
+  final double sizeMB;
+  final double priceTMT;
+  final String ussdCode;
+  final String badgeText;
+
+  const InternetPackage({
+    required this.id,
+    required this.name,
+    required this.dataSize,
+    required this.sizeMB,
+    required this.priceTMT,
+    required this.ussdCode,
+    required this.badgeText,
+  });
+}
+
+const List<InternetPackage> tmInternetPackages = [
+  InternetPackage(
+    id: 'net_3',
+    name: 'Internet 3',
+    dataSize: '50 MB',
+    sizeMB: 50.0,
+    priceTMT: 3.0,
+    ussdCode: '*0850*3#',
+    badgeText: 'Ekonom',
+  ),
+  InternetPackage(
+    id: 'net_5',
+    name: 'Internet 5',
+    dataSize: '100 MB',
+    sizeMB: 100.0,
+    priceTMT: 5.0,
+    ussdCode: '*0850*5#',
+    badgeText: 'Amala Tiz',
+  ),
+  InternetPackage(
+    id: 'net_10',
+    name: 'Internet 10',
+    dataSize: '250 MB',
+    sizeMB: 250.0,
+    priceTMT: 10.0,
+    ussdCode: '*0850*10#',
+    badgeText: 'Meşhur',
+  ),
+  InternetPackage(
+    id: 'net_60',
+    name: 'Internet 60',
+    dataSize: '1500 MB (1.5 GB)',
+    sizeMB: 1500.0,
+    priceTMT: 60.0,
+    ussdCode: '*0850*60#',
+    badgeText: 'Iň Köp Satylýan',
+  ),
+  InternetPackage(
+    id: 'net_160',
+    name: 'Internet 160',
+    dataSize: '4 GB (4096 MB)',
+    sizeMB: 4096.0,
+    priceTMT: 160.0,
+    ussdCode: '*0850*160#',
+    badgeText: 'Ulanyjy Saýlawy',
+  ),
+  InternetPackage(
+    id: 'net_200',
+    name: 'Internet 200',
+    dataSize: '20 GB (20480 MB)',
+    sizeMB: 20480.0,
+    priceTMT: 200.0,
+    ussdCode: '*0850*200#',
+    badgeText: 'VIP / Uly Göwrim',
+  ),
+];
+
 // ─── TM Parser ────────────────────────────────────────────────────────────────
 class TMParser {
   // ── 1. Balance ──────────────────────────────────────────────────────────────
@@ -276,11 +354,11 @@ class TMParser {
 
   // ── 9. MSISDN (*222#) ───────────────────────────────────────────────────────
   /// Parses phone number from *222# USSD pop-up response.
-  /// e.g. "MSISDN: 99365123456" or "MSISDN: 65123456"
+  /// e.g. "MSISDN: 99365123456", "MSISDN: 99371000000" or "MSISDN: 65123456"
   static String? parseMSISDN(String text) {
-    final clean = text.replaceAll(' ', '');
+    final clean = text.replaceAll(RegExp(r'\s+|-'), '');
     final regex = RegExp(
-        r'(?:MSISDN:|tel:)?(\+?9936[1-6]\d{6}|\b6[1-6]\d{6}\b|\b9936[1-6]\d{6}\b)',
+        r'(?:MSISDN:|tel:)?(\+?993(?:6[1-5]|71)\d{6}|\b(?:6[1-5]|71)\d{6}\b)',
         caseSensitive: false);
     final match = regex.firstMatch(clean);
     if (match != null && match.groupCount >= 1) {

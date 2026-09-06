@@ -114,7 +114,7 @@ class _AppInitializerState extends State<AppInitializer> {
       return const OnboardingScreen();
     }
 
-    return const DashboardScreen();
+    return const MainNavigationScreen();
   }
 }
 
@@ -153,17 +153,32 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _submitPhoneNumber({bool skipVerification = false}) async {
-    final text = _phoneController.text.trim();
-    final cleanNumber = text.replaceAll(' ', '');
-    // Validate TM CELL phone number format: +993 6X XXXXXX
-    final regex = RegExp(r'^\+9936[1-6]\d{6}$');
+    if (_isVerifying) return;
+
+    var text = _phoneController.text.trim();
+    // Normalize spaces and non-digit characters except leading +
+    var rawDigits = text.replaceAll(RegExp(r'\D'), '');
+
+    // Format to clean +993XXXXXXXX
+    String cleanNumber;
+    if (rawDigits.startsWith('993')) {
+      cleanNumber = '+$rawDigits';
+    } else {
+      cleanNumber = '+993$rawDigits';
+    }
+
+    // Validate TM CELL & Turkmenistan Phone prefixes: +993 (61..65, 71) XXXXXX
+    final regex = RegExp(r'^\+993(6[1-5]|71)\d{6}$');
 
     if (!regex.hasMatch(cleanNumber)) {
       setState(() {
-        _errorMessage = 'Haýyş, dogry TM CELL nomerini giriziň (+993 6X XXXXXX)';
+        _errorMessage = 'Haýyş, dogry TM CELL nomerini giriziň (+993 61-65 we 71 XXXXXX)';
       });
       return;
     }
+
+    // Formatted presentation: +993 6X XXXXXX
+    final formatted = '+993 ${cleanNumber.substring(4, 6)} ${cleanNumber.substring(6)}';
 
     setState(() {
       _errorMessage = null;
@@ -222,7 +237,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ],
             ),
             content: Text(
-              'Girizilen nomer: $text\nSIM-den okalan nomer: $detectedMsisdn\n\nNomeriňiz SIM kart bilen gabat gelmedi! Ýöne test üçin dowam edip bilersiňiz.',
+              'Girizilen nomer: $formatted\nSIM-den okalan nomer: $detectedMsisdn\n\nNomeriňiz SIM kart bilen gabat gelmedi! Ýöne test üçin dowam edip bilersiňiz.',
             ),
             actions: [
               TextButton(
@@ -258,18 +273,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
     final prefs = await SharedPreferences.getInstance();
     final simSlot = widget.forcedSimSlot ?? 0;
-    await prefs.setString('phone_number_sim_$simSlot', text);
+    await prefs.setString('phone_number_sim_$simSlot', formatted);
     if (simSlot == 0) {
-      await prefs.setString('phone_number', text);
+      await prefs.setString('phone_number', formatted);
     }
 
     if (widget.isEditing) {
-      if (mounted) Navigator.pop(context, text);
+      if (mounted) Navigator.pop(context, formatted);
     } else {
       if (mounted) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
         );
       }
     }
@@ -290,7 +305,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (mounted) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardScreen()),
+          MaterialPageRoute(builder: (_) => const MainNavigationScreen()),
         );
       }
     }
@@ -385,6 +400,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 child: TextField(
                   controller: _phoneController,
                   keyboardType: TextInputType.phone,
+                  inputFormatters: [LengthLimitingTextInputFormatter(16)],
                   style: GoogleFonts.inter(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
@@ -413,9 +429,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     contentPadding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 18),
                   ),
-                  onChanged: (_) {
+                  onChanged: (val) {
                     if (_errorMessage != null) {
                       setState(() => _errorMessage = null);
+                    }
+                    final rawDigits = val.replaceAll(RegExp(r'\D'), '');
+                    final clean = rawDigits.startsWith('993') ? '+$rawDigits' : '+993$rawDigits';
+                    final regex = RegExp(r'^\+993(6[1-5]|71)\d{6}$');
+                    if (regex.hasMatch(clean) && !_isVerifying) {
+                      _submitPhoneNumber();
                     }
                   },
                 ),
@@ -578,6 +600,8 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Completer<void>? _refreshCompleter;
   Timer? _timeoutTimer;
+  Timer? _autoRefreshTimer;
+  int _signalLevel = 4; // 0 to 4 cellular signal strength bars
 
   late AnimationController _spinController;
   late Animation<double> _spinAnimation;
@@ -601,6 +625,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _timeoutTimer?.cancel();
     _spinController.dispose();
     super.dispose();
@@ -614,7 +639,53 @@ class _DashboardScreenState extends State<DashboardScreen>
     _selectedSimSlot = savedSim;
     _autoRefreshFreq = savedFreq;
 
+    _startAutoRefreshTimer(savedFreq);
+    _getSignalStrength();
     await _loadSimData(savedSim);
+  }
+
+  Future<void> _getSignalStrength() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        final int? level = await _channel.invokeMethod<int>(
+          'getSignalStrength',
+          {'simSlot': _selectedSimSlot},
+        );
+        if (level != null && mounted) {
+          setState(() {
+            _signalLevel = level.clamp(0, 4);
+          });
+        }
+      } catch (e) {
+        debugPrint('Signal strength error: $e');
+      }
+    }
+  }
+
+  void _startAutoRefreshTimer(String freq) {
+    _autoRefreshTimer?.cancel();
+    if (freq == 'Öçürilen') return;
+
+    Duration duration;
+    switch (freq) {
+      case 'Her 6 sagatdan':
+        duration = const Duration(hours: 6);
+        break;
+      case 'Her 12 sagatdan':
+        duration = const Duration(hours: 12);
+        break;
+      case 'Her 24 sagatdan':
+        duration = const Duration(hours: 24);
+        break;
+      default:
+        duration = const Duration(hours: 6);
+    }
+
+    _autoRefreshTimer = Timer.periodic(duration, (_) {
+      if (mounted && !_isRefreshing) {
+        _handleRefresh();
+      }
+    });
   }
 
   Future<void> _loadSimData(int slot) async {
@@ -735,6 +806,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('sim_slot', slot);
     await _loadSimData(slot);
+    _getSignalStrength();
   }
 
   Future<void> _saveAutoRefreshFreq(String freq) async {
@@ -743,6 +815,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     setState(() {
       _autoRefreshFreq = freq;
     });
+    _startAutoRefreshTimer(freq);
   }
 
   Future<dynamic> _nativeMethodCallHandler(MethodCall call) async {
@@ -1254,8 +1327,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
-    // Internet – hemme zat MB-da görkezilýär
+    // Internet – MB galan, total GB görkezilýär
     final double internetProgress =
         _internetTotalMB > 0
             ? (_internetRemainingMB / _internetTotalMB).clamp(0.0, 1.0)
@@ -1265,98 +1339,109 @@ class _DashboardScreenState extends State<DashboardScreen>
     final double smsProgress =
         _smsTotal > 0 ? (_smsRemaining / _smsTotal).clamp(0.0, 1.0) : 0.0;
 
-    // Internet display helpers – MB, tercihen 0-dan kiçi bolmazlygy üçin
+    // Internet display helpers – galan MB, jemi GB görgüsinde
     final int remMB = _internetRemainingMB.round().clamp(0, 999999);
     final int totMB = _internetTotalMB.round().clamp(0, 999999);
+    final String internetSubText = _internetTotalMB >= 1024
+        ? '/ ${(_internetTotalMB / 1024.0).toStringAsFixed(0)} GB'
+        : '/ $totMB MB';
 
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _TopBar(
-                selectedSimSlot: _selectedSimSlot,
-                onOpenSettings: _showSettingsBottomSheet,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Hoş geldiňiz!',
-                style: GoogleFonts.inter(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.textMid,
+        child: RefreshIndicator(
+          onRefresh: _handleRefresh,
+          color: AppColors.ringInternet,
+          backgroundColor: Colors.white,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: ClampingScrollPhysics(),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _TopBar(
+                  selectedSimSlot: _selectedSimSlot,
+                  signalLevel: _signalLevel,
+                  onOpenSettings: _showSettingsBottomSheet,
                 ),
-              ),
-              const SizedBox(height: 20),
-              _BalanceCard(
-                balance: _balance,
-                phoneNumber: _phoneNumber,
-                simSlot: _selectedSimSlot,
-                detectedPackage: _detectedPackage,
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  Expanded(
-                    child: _UtilityCard(
-                      icon: Icons.cloud_outlined,
-                      iconColor: AppColors.ringInternet,
-                      label: 'Internet',
-                      valueText: '$remMB MB',
-                      subText: '/ $totMB MB',
-                      progress: internetProgress,
-                      ringColor: AppColors.ringInternet,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _UtilityCard(
-                      icon: Icons.phone_outlined,
-                      iconColor: AppColors.ringMinutes,
-                      label: 'Minut',
-                      valueText: '$_minutesRemaining',
-                      subText: '/ $_minutesTotal min',
-                      progress: minutesProgress,
-                      ringColor: AppColors.ringMinutes,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _UtilityCard(
-                      icon: Icons.mail_outline_rounded,
-                      iconColor: AppColors.ringSMS,
-                      label: 'SMS',
-                      valueText: '$_smsRemaining',
-                      subText: '/ $_smsTotal SMS',
-                      progress: smsProgress,
-                      ringColor: AppColors.ringSMS,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 36),
-              _RefreshButton(
-                isRefreshing: _isRefreshing,
-                spinAnimation: _spinAnimation,
-                onTap: _handleRefresh,
-              ),
-              const SizedBox(height: 14),
-              Center(
-                child: Text(
-                  'Soňky täzelenme: $_lastUpdated',
+                const SizedBox(height: 16),
+                Text(
+                  'Hoş geldiňiz!',
                   style: GoogleFonts.inter(
-                    fontSize: 12,
-                    color: AppColors.textLight,
-                    fontWeight: FontWeight.w400,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textMid,
                   ),
                 ),
-              ),
-              const SizedBox(height: 16),
-            ],
+                const SizedBox(height: 20),
+                _BalanceCard(
+                  balance: _balance,
+                  phoneNumber: _phoneNumber,
+                  simSlot: _selectedSimSlot,
+                  detectedPackage: _detectedPackage,
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _UtilityCard(
+                        icon: Icons.cloud_outlined,
+                        iconColor: AppColors.ringInternet,
+                        label: 'Internet',
+                        valueText: '$remMB MB',
+                        subText: internetSubText,
+                        progress: internetProgress,
+                        ringColor: AppColors.ringInternet,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _UtilityCard(
+                        icon: Icons.phone_outlined,
+                        iconColor: AppColors.ringMinutes,
+                        label: 'Minut',
+                        valueText: '$_minutesRemaining',
+                        subText: '/ $_minutesTotal min',
+                        progress: minutesProgress,
+                        ringColor: AppColors.ringMinutes,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _UtilityCard(
+                        icon: Icons.mail_outline_rounded,
+                        iconColor: AppColors.ringSMS,
+                        label: 'SMS',
+                        valueText: '$_smsRemaining',
+                        subText: '/ $_smsTotal SMS',
+                        progress: smsProgress,
+                        ringColor: AppColors.ringSMS,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 32),
+                _RefreshButton(
+                  isRefreshing: _isRefreshing,
+                  spinAnimation: _spinAnimation,
+                  onTap: _handleRefresh,
+                ),
+                const SizedBox(height: 14),
+                Center(
+                  child: Text(
+                    'Soňky täzelenme: $_lastUpdated • Swiping down (ýokary serpmek) täzeleýär',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      color: AppColors.textLight,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+              ],
+            ),
           ),
         ),
       ),
@@ -1367,10 +1452,12 @@ class _DashboardScreenState extends State<DashboardScreen>
 // ─── Top Bar ──────────────────────────────────────────────────────────────────
 class _TopBar extends StatelessWidget {
   final int selectedSimSlot;
+  final int signalLevel;
   final VoidCallback onOpenSettings;
 
   const _TopBar({
     required this.selectedSimSlot,
+    required this.signalLevel,
     required this.onOpenSettings,
   });
 
@@ -1419,6 +1506,8 @@ class _TopBar extends StatelessWidget {
         ),
         Row(
           children: [
+            _SignalIndicator(level: signalLevel),
+            const SizedBox(width: 8),
             // SIM Badge Indicator
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1480,6 +1569,60 @@ class _TopBar extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+// ─── Cellular Signal Strength Indicator ─────────────────────────────────────────
+class _SignalIndicator extends StatelessWidget {
+  final int level; // 0 to 4 signal strength bars
+  const _SignalIndicator({required this.level});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: List.generate(4, (i) {
+              final barHeight = 5.0 + (i * 3.0);
+              final active = i < level;
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 1),
+                width: 3,
+                height: barHeight,
+                decoration: BoxDecoration(
+                  color: active ? AppColors.ringInternet : AppColors.textLight.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              );
+            }),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'Signal',
+            style: GoogleFonts.inter(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textDark,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1861,6 +2004,601 @@ class _RefreshButton extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Internet Package Card ───────────────────────────────────────────────────
+class _InternetPackageCard extends StatelessWidget {
+  final InternetPackage package;
+  final VoidCallback onTap;
+
+  const _InternetPackageCard({
+    required this.package,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.cardBg,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.all(14.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppColors.ringInternet.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        package.badgeText,
+                        style: GoogleFonts.inter(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.ringInternet,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${package.priceTMT.toStringAsFixed(0)} TMT',
+                      style: GoogleFonts.inter(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        gradient: AppColors.btnGradient,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.gradEnd.withValues(alpha: 0.3),
+                            blurRadius: 6,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.wifi_rounded,
+                        color: Colors.white,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            package.name,
+                            style: GoogleFonts.inter(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                          Text(
+                            package.dataSize,
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.ringInternet,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.ringInternet.withValues(alpha: 0.35)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Satyn Al (${package.ussdCode})',
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.ringInternet,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.touch_app_rounded,
+                        size: 14,
+                        color: AppColors.ringInternet,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Main Navigation Screen (Bottom Tab Shell) ───────────────────────────────
+class MainNavigationScreen extends StatefulWidget {
+  final int initialIndex;
+  const MainNavigationScreen({super.key, this.initialIndex = 0});
+
+  @override
+  State<MainNavigationScreen> createState() => _MainNavigationScreenState();
+}
+
+class _MainNavigationScreenState extends State<MainNavigationScreen> {
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screens = [
+      const DashboardScreen(),
+      const InternetPackagesScreen(),
+    ];
+
+    return Scaffold(
+      body: IndexedStack(
+        index: _currentIndex,
+        children: screens,
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 16,
+              offset: const Offset(0, -4),
+            ),
+          ],
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: (index) => setState(() => _currentIndex = index),
+          selectedItemColor: AppColors.ringInternet,
+          unselectedItemColor: AppColors.textMid,
+          elevation: 0,
+          backgroundColor: Colors.white,
+          selectedLabelStyle: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 12),
+          unselectedLabelStyle: GoogleFonts.inter(fontWeight: FontWeight.w500, fontSize: 12),
+          items: const [
+            BottomNavigationBarItem(
+              icon: Icon(Icons.dashboard_rounded),
+              label: 'Esasy',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.wifi_protected_setup_rounded),
+              label: 'Internet Bukjalary',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Internet Packages Screen ────────────────────────────────────────────────
+class InternetPackagesScreen extends StatefulWidget {
+  const InternetPackagesScreen({super.key});
+
+  @override
+  State<InternetPackagesScreen> createState() => _InternetPackagesScreenState();
+}
+
+class _InternetPackagesScreenState extends State<InternetPackagesScreen> {
+  static const _channel = MethodChannel('com.tmutility.app/ussd');
+  int _selectedSimSlot = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSimSlot();
+  }
+
+  Future<void> _loadSimSlot() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _selectedSimSlot = prefs.getInt('sim_slot') ?? 0;
+      });
+    }
+  }
+
+  Future<void> _showInternetPurchaseConfirmationDialog(InternetPackage pkg) async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          titlePadding: EdgeInsets.zero,
+          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+          title: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFFD90429), Color(0xFFEF233C)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.warning_amber_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'ÜNS BERIŇ!',
+                    style: GoogleFonts.inter(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 19,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Balansdan Töleg Kesiler',
+                style: GoogleFonts.inter(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textDark,
+                ),
+              ),
+              const SizedBox(height: 10),
+              RichText(
+                text: TextSpan(
+                  style: GoogleFonts.inter(
+                    fontSize: 14,
+                    color: AppColors.textDark,
+                    height: 1.5,
+                  ),
+                  children: [
+                    const TextSpan(text: 'Siz '),
+                    TextSpan(
+                      text: '${pkg.name} (${pkg.dataSize})',
+                      style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.gradMid),
+                    ),
+                    const TextSpan(text: ' internet paketi birikdirýärsiňiz.\n\nHasabyňyzdan derrew '),
+                    TextSpan(
+                      text: '${pkg.priceTMT.toStringAsFixed(0)} TMT',
+                      style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFD90429)),
+                    ),
+                    const TextSpan(text: ' aýrylar! Dowam etmek isleýärsiňizmi?'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.textLight.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.sim_card_outlined, size: 18, color: AppColors.ringInternet),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'USSD: ${pkg.ussdCode} (SIM ${_selectedSimSlot + 1})',
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textMid,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                side: const BorderSide(color: AppColors.textLight),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+              child: Text(
+                'Ýatyr',
+                style: GoogleFonts.inter(
+                  color: AppColors.textMid,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00B4D8),
+                foregroundColor: Colors.white,
+                elevation: 2,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              ),
+              child: Text(
+                'Tassykla we Birikdir',
+                style: GoogleFonts.inter(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirm == true) {
+      await _executeInternetPurchase(pkg);
+    }
+  }
+
+  Future<void> _executeInternetPurchase(InternetPackage pkg) async {
+    final bool isRealAndroidDevice = !kIsWeb && Platform.isAndroid;
+
+    if (!isRealAndroidDevice) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_outline, color: Colors.white),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${pkg.name} (${pkg.dataSize}) haýyş gowşuryldy! (${pkg.ussdCode} SIM ${_selectedSimSlot + 1})',
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFF00B4D8),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    final smsStatus = await Permission.sms.request();
+    final phoneStatus = await Permission.phone.request();
+
+    if (!smsStatus.isGranted || !phoneStatus.isGranted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Rugsat berilmedi. Hyzmat birikdirilip bilinmedi.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      final String? response = await _channel.invokeMethod<String>(
+        'sendUSSD',
+        {'ussdCode': pkg.ussdCode, 'simSlot': _selectedSimSlot},
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              response != null && response.isNotEmpty
+                  ? response
+                  : '${pkg.name} sargydy ugradyldy (${pkg.ussdCode})',
+            ),
+            backgroundColor: const Color(0xFF00B4D8),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Säwlik ýüze çykdy: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          physics: const ClampingScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          gradient: AppColors.mainGradient,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.gradEnd.withValues(alpha: 0.35),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.wifi_rounded, color: Colors.white, size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Internet Bukjalary',
+                            style: GoogleFonts.inter(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.textDark,
+                            ),
+                          ),
+                          Text(
+                            '*0850* hyzmaty arkaly',
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              color: AppColors.textMid,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      'Bir Basymda',
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.green,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.04),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded, color: AppColors.ringInternet, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'USSD koduny manuel yazmazdan, bir basymda hazır internet bukjalaryny ygtybarly birikdiriň.',
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          color: AppColors.textMid,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: tmInternetPackages.length,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  childAspectRatio: 1.10,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                ),
+                itemBuilder: (context, index) {
+                  final pkg = tmInternetPackages[index];
+                  return _InternetPackageCard(
+                    package: pkg,
+                    onTap: () => _showInternetPurchaseConfirmationDialog(pkg),
+                  );
+                },
+              ),
+              const SizedBox(height: 24),
+            ],
+          ),
         ),
       ),
     );
